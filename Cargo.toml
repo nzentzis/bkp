@@ -1,0 +1,18 @@
+[package]
+name = "bkp"
+version = "0.1.0"
+authors = ["Noah Zentzis <nzentzis@gmail.com>"]
+
+[dependencies]
+tokio-proto = "0.1.1"
+futures = "0.1"
+capnp = "0.8"
+native-tls = "0.1"
+clap = "2.24"
+term-painter = "0.2"
+pest = "0.4"
+url = "1.4.0"
+rust-crypto = "^0.2"
+
+[build-dependencies]
+capnpc = "0.8"
