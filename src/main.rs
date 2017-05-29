@@ -1,3 +1,6 @@
+// required for pest
+#![recursion_limit="128"]
+
 mod config;
 
 #[macro_use]
@@ -7,7 +10,6 @@ extern crate clap;
 extern crate url;
 
 use url::Url;
-use clap::{Arg, App, SubCommand};
 
 fn main() {
     let opt_matches = clap_app!(bkp =>
@@ -109,4 +111,6 @@ fn main() {
          (@arg local: +takes_value * ... "Files or directories to restore")
          )
         ).get_matches();
+
+    config::Config::load(&std::path::PathBuf::from("foo.cfg")).expect("Can't load config");
 }
