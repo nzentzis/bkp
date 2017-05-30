@@ -2,6 +2,7 @@
 #![recursion_limit="128"]
 
 mod config;
+mod keys;
 
 #[macro_use]
 extern crate pest;
@@ -10,6 +11,35 @@ extern crate clap;
 extern crate url;
 
 use url::Url;
+use std::io::Write;
+use std::error::Error;
+
+struct GlobalOptions {
+    cfg: config::Config,
+    verbose: bool,
+    quiet: bool
+}
+
+fn do_keys(args: &clap::ArgMatches, opts: &GlobalOptions) {
+}
+
+fn do_dest(args: &clap::ArgMatches, opts: &GlobalOptions) {
+}
+
+fn do_test(args: &clap::ArgMatches, opts: &GlobalOptions) {
+}
+
+fn do_stat(args: &clap::ArgMatches, opts: &GlobalOptions) {
+}
+
+fn do_clean(args: &clap::ArgMatches, opts: &GlobalOptions) {
+}
+
+fn do_snap(args: &clap::ArgMatches, opts: &GlobalOptions) {
+}
+
+fn do_restore(args: &clap::ArgMatches, opts: &GlobalOptions) {
+}
 
 fn main() {
     let opt_matches = clap_app!(bkp =>
@@ -112,5 +142,34 @@ fn main() {
          )
         ).get_matches();
 
-    config::Config::load(&std::path::PathBuf::from("foo.cfg")).expect("Can't load config");
+    // load a config file
+    let config_path = std::path::PathBuf::from(
+        opt_matches.value_of("CONFIG").unwrap_or("foo.cfg"));
+    let cfg = config::Config::load(&config_path);
+    if let Err(e) = cfg {
+        let errstr = match e {
+            config::ConfigErr::ParseError(x) => x,
+            config::ConfigErr::IOError(x) => String::from(x.description()) };
+        writeln!(std::io::stderr(), "bkp: Cannot load config file: {}", errstr);
+        std::process::exit(1);
+    }
+
+    // parse global flags
+    let mut global_flags = GlobalOptions {
+        cfg: cfg.unwrap(),
+        verbose: opt_matches.is_present("VERBOSE"),
+        quiet: opt_matches.is_present("QUIET") };
+
+    // figure out what to do
+    match opt_matches.subcommand() {
+        ("", _) => { println!("bkp: No subcommand specified"); },
+        ("dest", Some(m)) => do_dest(m, &global_flags),
+        ("keys", Some(m)) => do_keys(m, &global_flags),
+        ("test", Some(m)) => do_test(m, &global_flags),
+        ("stat", Some(m)) => do_stat(m, &global_flags),
+        ("clean", Some(m)) => do_clean(m, &global_flags),
+        ("snap", Some(m)) => do_snap(m, &global_flags),
+        ("restore", Some(m)) => do_restore(m, &global_flags),
+        (x, _) => panic!("No subcommand handler found!")
+    }
 }
