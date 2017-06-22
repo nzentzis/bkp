@@ -4,6 +4,8 @@
 mod config;
 mod keys;
 
+extern crate untrusted;
+
 #[macro_use]
 extern crate pest;
 #[macro_use]
@@ -13,14 +15,50 @@ extern crate url;
 use url::Url;
 use std::io::Write;
 use std::error::Error;
+use std::fs;
+use std::path::{Path,PathBuf};
 
 struct GlobalOptions {
+    data_dir: PathBuf,
+    keystore: keys::Keystore,
     cfg: config::Config,
     verbose: bool,
     quiet: bool
 }
 
-fn do_keys(args: &clap::ArgMatches, opts: &GlobalOptions) {
+fn fail_error<E: Error>(msg: &str, err: E) {
+    writeln!(std::io::stderr(), "bkp: {}: {}", msg, err).unwrap();
+    std::process::exit(1);
+}
+
+fn do_keys(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
+    match args.subcommand() {
+        ("", _) => { // list keys
+            match opts.keystore.list_keys() {
+                Ok(ks) => for e in ks {
+                    println!("{} {}", e.1.describe(), e.0);
+                },
+                Err(e) => fail_error("Cannot list stored keys", e)
+            }
+        }
+        ("new", Some(m)) => { // create a new key
+            let name = m.value_of("name").unwrap();
+            let t = match m.value_of("keytype").unwrap() {
+                "asymm" => keys::KeyType::Asymm,
+                "symm" => keys::KeyType::Symm,
+                _ => panic!("Impossible option found") };
+            if let Err(e) = opts.keystore.new_key(name, t) {
+                fail_error("Failed to create key", e);
+            }
+        }
+        ("import", Some(m)) => { // import keys
+        }
+        ("export", Some(m)) => { // export keys
+        }
+        ("sync", Some(m)) => { // sync keystore with remote
+        }
+        (_, _) => panic!("No subcommand handler found!")
+    }
 }
 
 fn do_dest(args: &clap::ArgMatches, opts: &GlobalOptions) {
@@ -47,12 +85,19 @@ fn main() {
         (author: "Noah Zentzis <nzentzis@gmail.com>")
         (about: "Automated system backup utility")
         (@arg CONFIG: -c --config +takes_value "Specifies a config file to use")
-        (@arg BACKEND: -d --dest +takes_value
+        (@arg DATADIR: -D --data-dir +takes_value "Specify the local data path")
+        (@arg BACKEND: -t --target +takes_value
          "Override the default destination")
         (@arg VERBOSE: -v --verbose "Enable verbose terminal output")
         (@arg QUIET: -q --quiet "Silence non-error terminal output")
         (@subcommand keys =>
          (about: "Manipulate local or remote keystores")
+         (@subcommand new =>
+          (about: "Create a new key")
+          (@arg name: +required +takes_value "Name to assign to the new key")
+          (@arg keytype: -t --type +takes_value
+           possible_values(&["symm", "asymm"]) default_value("symm")
+           "The key type to create"))
          (@subcommand import =>
           (about: "Import keystore from an encrypted backup file")
           (@arg file: +required "Keystore file to import")
@@ -60,9 +105,6 @@ fn main() {
          (@subcommand export =>
           (about: "Export keystore to an encrypted backup file")
           (@arg file: +required "Filename of new backup file"))
-         (@subcommand show =>
-          (about: "Show local, remote, and backup keystores")
-          (@arg from: "Filename of backup file or name of remote"))
          (@subcommand sync =>
           (about: "Sync local and remote copies of keystore")
           (@arg down_only: -d --down "Only sync from remote to local")
@@ -150,26 +192,77 @@ fn main() {
         let errstr = match e {
             config::ConfigErr::ParseError(x) => x,
             config::ConfigErr::IOError(x) => String::from(x.description()) };
-        writeln!(std::io::stderr(), "bkp: Cannot load config file: {}", errstr);
+        writeln!(std::io::stderr(), "bkp: Cannot load config file: {}", errstr).unwrap();
         std::process::exit(1);
     }
+
+    // create the data dir if needed
+    let data_dir = opt_matches.value_of("DATADIR").map(Path::new)
+        .map(Path::to_path_buf)
+        .unwrap_or(std::env::home_dir().unwrap().join(".bkp"));
+    if let Err(e) = fs::metadata(&data_dir) {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            if fs::create_dir(&data_dir).is_err() {
+                writeln!(std::io::stderr(), "bkp: Cannot create directory: {}",
+                    data_dir.display()).unwrap();
+                std::process::exit(1);
+            }
+        } else {
+            writeln!(std::io::stderr(), "bkp: Cannot access directory: {}",
+                data_dir.display()).unwrap();
+            std::process::exit(1);
+        }
+    }
+
+    // open the key store
+    let kspath = data_dir.join("keystore");
+    let ks = match fs::metadata(&kspath) {
+        Ok(_) => match keys::Keystore::open(&kspath) {
+            Ok(k) => k,
+            Err(e) => {
+                writeln!(std::io::stderr(), "bkp: Cannot open keystore: {}",
+                    kspath.display());
+                std::process::exit(1);
+                panic!("");
+            }
+        },
+        Err(e) => if e.kind() == std::io::ErrorKind::NotFound {
+            match keys::Keystore::create(&kspath) {
+                Ok(k) => k,
+                Err(e) => {
+                    writeln!(std::io::stderr(), "bkp: Cannot create keystore: {}",
+                        kspath.display());
+                    std::process::exit(1);
+                    panic!("");
+                }
+            }
+        } else {
+            writeln!(std::io::stderr(), "bkp: Cannot access keystore: {}",
+                kspath.display()).unwrap();
+            std::process::exit(1);
+            panic!("");
+        }
+    };
 
     // parse global flags
     let mut global_flags = GlobalOptions {
         cfg: cfg.unwrap(),
         verbose: opt_matches.is_present("VERBOSE"),
-        quiet: opt_matches.is_present("QUIET") };
+        quiet: opt_matches.is_present("QUIET"),
+        data_dir: data_dir,
+        keystore: ks
+    };
 
     // figure out what to do
     match opt_matches.subcommand() {
         ("", _) => { println!("bkp: No subcommand specified"); },
         ("dest", Some(m)) => do_dest(m, &global_flags),
-        ("keys", Some(m)) => do_keys(m, &global_flags),
+        ("keys", Some(m)) => do_keys(m, &mut global_flags),
         ("test", Some(m)) => do_test(m, &global_flags),
         ("stat", Some(m)) => do_stat(m, &global_flags),
         ("clean", Some(m)) => do_clean(m, &global_flags),
         ("snap", Some(m)) => do_snap(m, &global_flags),
         ("restore", Some(m)) => do_restore(m, &global_flags),
-        (x, _) => panic!("No subcommand handler found!")
+        (_, _) => panic!("No subcommand handler found!")
     }
 }
