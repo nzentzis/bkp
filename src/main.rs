@@ -223,7 +223,6 @@ fn main() {
                 writeln!(std::io::stderr(), "bkp: Cannot open keystore: {}",
                     kspath.display());
                 std::process::exit(1);
-                panic!("");
             }
         },
         Err(e) => if e.kind() == std::io::ErrorKind::NotFound {
@@ -233,14 +232,12 @@ fn main() {
                     writeln!(std::io::stderr(), "bkp: Cannot create keystore: {}",
                         kspath.display());
                     std::process::exit(1);
-                    panic!("");
                 }
             }
         } else {
             writeln!(std::io::stderr(), "bkp: Cannot access keystore: {}",
                 kspath.display()).unwrap();
             std::process::exit(1);
-            panic!("");
         }
     };
 

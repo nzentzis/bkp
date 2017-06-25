@@ -5,7 +5,7 @@ use untrusted;
 use self::rpassword::prompt_password_stderr;
 use self::ring::rand::{SecureRandom,SystemRandom};
 use std::path::{Path,PathBuf};
-use std::io::Write;
+use std::io::{Read,Write};
 use std::io;
 use std::fs;
 use std::error;
@@ -20,6 +20,7 @@ pub enum Error {
     PasswordError,
     InvalidKeystore,
     CryptoError,
+    NotFound,
     IOError(io::Error)
 }
 
@@ -29,6 +30,7 @@ impl fmt::Display for Error {
             &Error::PasswordError    => write!(f, "Invalid password"),
             &Error::InvalidKeystore  => write!(f, "Invalid keystore"),
             &Error::CryptoError      => write!(f, "Cryptographic error"),
+            &Error::NotFound         => write!(f, "Not found"),
             &Error::IOError(ref e)   => {
                 write!(f, "I/O Error: ");
                 e.fmt(f)
@@ -43,6 +45,7 @@ impl error::Error for Error {
             &Error::PasswordError   => "Invalid password",
             &Error::InvalidKeystore => "Invalid keystore",
             &Error::CryptoError     => "Cryptographic error",
+            &Error::NotFound        => "Not found",
             &Error::IOError(ref e)  => "I/O error"
         }
     }
@@ -52,6 +55,7 @@ impl From<io::Error> for Error {
     fn from(e: io::Error) -> Error { Error::IOError(e) }
 }
 
+#[derive(PartialEq,Copy,Clone)]
 pub enum KeyType {
     Symm, Asymm
 }
@@ -59,8 +63,8 @@ pub enum KeyType {
 impl KeyType {
     pub fn describe(&self) -> &str {
         match self {
-            Symm => "symm ",
-            Asymm => "asymm"
+            &KeyType::Symm => "symm",
+            &KeyType::Asymm => "asymm"
         }
     }
 }
@@ -74,7 +78,8 @@ pub enum Key {
 
 pub struct Keystore {
     /// The location of the keystore's location on disk
-    loc: PathBuf
+    loc: PathBuf,
+    index: Vec<(String, KeyType)>
 }
 
 impl Keystore {
@@ -109,7 +114,8 @@ impl Keystore {
         }
 
         Ok(Keystore {
-            loc: p.to_path_buf()
+            loc: p.to_path_buf(),
+            index: Vec::new()
         })
     }
 
@@ -126,31 +132,34 @@ impl Keystore {
 
         if !root_meta.is_dir() { return Err(Error::InvalidKeystore); }
         if !meta_meta.is_file() { return Err(Error::InvalidKeystore); }
+
+        // populate key index
+        let entries = fs::read_dir(&p)?;
+        let mut index = Vec::new();
         
-        Ok(Keystore {
-            loc: p.to_path_buf()
-        })
-    }
-
-    /// Return a list of the valid keys and information about them
-    pub fn list_keys(&self) -> Result<Vec<(String, KeyType)>, Error> {
-        let entries = fs::read_dir(&self.loc)?;
-        let mut out = Vec::new();
-
         for e in entries {
             let e = e?;
             if let Some(s) = e.file_name().to_str() {
-                if s.ends_with(".symm") {
-                    out.push((s.trim_right_matches(".symm").to_owned(), KeyType::Symm));
+                if s.ends_with(".asymm") {
+                    index.push((s.trim_right_matches(".asymm").to_owned(), KeyType::Asymm));
                     continue;
                 }
-                if s.ends_with(".asymm") {
-                    out.push((s.trim_right_matches(".asymm").to_owned(), KeyType::Asymm));
+                if s.ends_with(".symm") {
+                    index.push((s.trim_right_matches(".symm").to_owned(), KeyType::Symm));
                     continue;
                 }
             }
         }
-        Ok(out)
+
+        Ok(Keystore {
+            loc: p.to_path_buf(),
+            index: index
+        })
+    }
+
+    /// Return a list of the valid keys and information about them
+    pub fn list_keys(&self) -> Result<&Vec<(String, KeyType)>, Error> {
+        Ok(&self.index)
     }
 
     /// Create a new symmetric/asymmetric key
@@ -158,7 +167,7 @@ impl Keystore {
         let mut rand = SystemRandom::new();
         match t {
             KeyType::Symm => {
-                let mut key = [0u8; 256];
+                let mut key = [0u8; ring::digest::SHA256_OUTPUT_LEN];
                 rand.fill(&mut key);
 
                 // store the key on disk
@@ -170,6 +179,7 @@ impl Keystore {
                 }
 
                 // return the result
+                self.index.push((name.to_owned(), t));
                 Ok(Key::Symmetric(name.to_owned(), key.to_vec()))
             },
             KeyType::Asymm => {
@@ -188,7 +198,39 @@ impl Keystore {
 
                 let keypair = ring::signature::Ed25519KeyPair::from_pkcs8(
                     untrusted::Input::from(&key)).unwrap();
+                self.index.push((name.to_owned(), t));
                 Ok(Key::Asymmetric(name.to_owned(), keypair))
+            }
+        }
+    }
+
+    /// Read a named key from the keystore
+    pub fn read_key(&self, name: &str, t: KeyType) -> Result<Key, Error> {
+        let found = self.index.iter().find(|&&(ref n,t_)| n == name && t_ == t);
+        if found.is_none() { return Err(Error::NotFound); }
+
+        // build a path and read the key
+        let pth = self.loc.join(format!("{}.{}", name, t.describe()));
+
+        let content = {
+            let mut buf = Vec::new();
+            let mut f = fs::File::open(pth)?;
+            f.read_to_end(&mut buf)?;
+            buf
+        };
+
+        // try to parse the key
+        match t {
+            KeyType::Asymm => ring::signature::Ed25519KeyPair::from_pkcs8(
+                    untrusted::Input::from(&content))
+                .map(|r| Key::Asymmetric(name.to_owned(), r))
+                .map_err(|e| Error::CryptoError),
+            KeyType::Symm => {
+                if content.len() != ring::digest::SHA256_OUTPUT_LEN {
+                    Err(Error::CryptoError)
+                } else {
+                    Ok(Key::Symmetric(name.to_owned(), content))
+                }
             }
         }
     }
