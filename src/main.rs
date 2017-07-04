@@ -3,7 +3,10 @@
 
 mod config;
 mod keys;
+mod metadata;
+mod remote;
 
+extern crate ring;
 extern crate untrusted;
 
 #[macro_use]
