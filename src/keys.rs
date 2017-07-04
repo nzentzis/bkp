@@ -141,11 +141,13 @@ impl Keystore {
             let e = e?;
             if let Some(s) = e.file_name().to_str() {
                 if s.ends_with(".asymm") {
-                    index.push((s.trim_right_matches(".asymm").to_owned(), KeyType::Asymm));
+                    index.push((s.trim_right_matches(".asymm").to_owned(),
+                        KeyType::Asymm));
                     continue;
                 }
                 if s.ends_with(".symm") {
-                    index.push((s.trim_right_matches(".symm").to_owned(), KeyType::Symm));
+                    index.push((s.trim_right_matches(".symm").to_owned(),
+                        KeyType::Symm));
                     continue;
                 }
             }
