@@ -90,7 +90,7 @@ all fields are little-endian unless otherwise specified.
         u8[target_len] target
     }
 
-    struct tree_object {
+    struct file_object {
         u64 create_time
         u8  obj_type_id = 3
 
