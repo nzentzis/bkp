@@ -42,7 +42,7 @@ all fields are little-endian unless otherwise specified.
         u64 ctime
 
         // unix mode bits
-        bitfield mode {
+        bitfield(u16) mode {
             o_read: 1  // others read
             o_write: 1 // others write
             o_exec: 1  // others exec
@@ -61,7 +61,13 @@ all fields are little-endian unless otherwise specified.
     struct version_object {
         u64 create_time
         u8  obj_type_id = 0
-        obj_tag parent
+
+        obj_tag root;
+
+        bool8 has_parent
+        if(has_parent) {
+            obj_tag parent
+        }
     }
 
     struct tree_object {

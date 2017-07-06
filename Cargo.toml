@@ -14,6 +14,7 @@ pest = "0.4"
 url = "1.4.0"
 rpassword = "0.4.0"
 untrusted = "0.5"
+byteorder = "1.0.0"
 
 [dependencies.ring]
 version = "0.11.0"
