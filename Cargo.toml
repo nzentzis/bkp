@@ -4,7 +4,8 @@ version = "0.1.0"
 authors = ["Noah Zentzis <nzentzis@gmail.com>"]
 
 [dependencies]
-tokio-proto = "0.1.1"
+tokio-proto = "0.1"
+tokio-core = "0.1"
 futures = "0.1"
 capnp = "0.8"
 native-tls = "0.1"
@@ -15,6 +16,8 @@ url = "1.4.0"
 rpassword = "0.4.0"
 untrusted = "0.5"
 byteorder = "1.0.0"
+
+ssh2 = "0.3.1"
 
 [dependencies.ring]
 version = "0.11.0"
