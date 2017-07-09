@@ -93,6 +93,30 @@ fn do_snap(args: &clap::ArgMatches, opts: &GlobalOptions) {
 fn do_restore(args: &clap::ArgMatches, opts: &GlobalOptions) {
 }
 
+fn load_config(pth: &Path) -> config::Config {
+    let cfg = config::Config::load(&pth);
+    if let Err(e) = cfg {
+        if let config::ConfigErr::IOError(ref err) = e {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                writeln!(std::io::stderr(), "Creating new configuration file");
+
+                // try to create a new config
+                let cfg = config::Config::default();
+                cfg.save();
+                return cfg
+            }
+        }
+        let errstr = match e {
+            config::ConfigErr::ParseError(x) => x,
+            config::ConfigErr::IOError(x) => String::from(x.description())
+        };
+        writeln!(std::io::stderr(),
+            "bkp: Cannot load config file: {}", errstr).unwrap();
+        std::process::exit(1);
+    }
+    return cfg.unwrap();
+} 
+
 fn main() {
     let opt_matches = clap_app!(bkp =>
         (version: "0.1")
@@ -206,15 +230,7 @@ fn main() {
         .map(Path::new)
         .map(Path::to_path_buf)
         .unwrap_or(std::env::home_dir().unwrap().join(".bkprc"));
-    let cfg = config::Config::load(&config_path);
-    if let Err(e) = cfg {
-        let errstr = match e {
-            config::ConfigErr::ParseError(x) => x,
-            config::ConfigErr::IOError(x) => String::from(x.description()) };
-        writeln!(std::io::stderr(),
-            "bkp: Cannot load config file: {}", errstr).unwrap();
-        std::process::exit(1);
-    }
+    let cfg = load_config(&config_path);
 
     // create the data dir if needed
     let data_dir = opt_matches.value_of("DATADIR").map(Path::new)
@@ -263,7 +279,7 @@ fn main() {
 
     // parse global flags
     let mut global_flags = GlobalOptions {
-        cfg: cfg.unwrap(),
+        cfg: cfg,
         verbose: opt_matches.is_present("VERBOSE"),
         quiet: opt_matches.is_present("QUIET"),
         data_dir: data_dir,

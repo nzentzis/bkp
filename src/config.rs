@@ -3,6 +3,7 @@ use std::path::{PathBuf,Path};
 use std::fs::File;
 use std::io::{Read,Write};
 use std::io;
+use std::env;
 use pest::*;
 use pest;
 
@@ -271,5 +272,15 @@ impl Config {
 
     pub fn find_group(&self, name: &str) -> Option<&TargetGroup> {
         self.target_groups.iter().find(|ref t| t.name == name)
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            location: env::home_dir().unwrap().join(".bkprc"),
+            targets: Vec::new(),
+            target_groups: Vec::new()
+        }
     }
 }
