@@ -6,53 +6,14 @@ use std::io;
 use pest::*;
 use pest;
 
-/// Configuration and options for asymmetric signature algorithms
-#[derive(Debug)]
-pub struct SignatureConfig {
-    /// Name of the asymmetric key to use
-    key: String
-}
-
-/// Configuration and options for symmetric data-protection algorithms
-#[derive(Debug)]
-pub struct EncryptionConfig {
-    /// Name of the symmetric key to use
-    key: String
-}
-
-#[derive(Debug)]
-pub enum CryptoMode {
-    /// Disable encryption for this destination. Data will still be encrypted
-    /// during transmission.
-    NoEncryption,
-
-    /// Data will be signed to protect it from remote modification, but will
-    /// still be readable by the target.
-    Immutable(SignatureConfig),
-
-    /// Data will be encrypted and signed, but metadata will only be signed, not
-    /// encrypted.
-    DataSecure(SignatureConfig, EncryptionConfig),
-
-    /// Both data and metadata will be encrypted with the remote's key to
-    /// protect it from reads and signed to prevent modification.
-    FullySecure(SignatureConfig, EncryptionConfig)
-}
-
 #[derive(Debug)]
 pub struct TargetOptions {
     /// whether data on this destination needs replicated elsewhere
     pub reliable: bool,
 
-    /// encryption settings for data stored on this target
-    pub crypto: CryptoMode,
-
     /// the relative costs of data upload and download for this target
     pub upload_cost: i32,
     pub download_cost: i32,
-
-    /// whether keystore should be mirrored on this destination
-    pub mirror_global_keys: bool
 }
 
 #[derive(Debug)]
@@ -61,7 +22,6 @@ pub struct BackupTarget {
     pub url: Url,
     pub user: Option<String>,
     pub password: Option<String>,
-    pub key: Option<PathBuf>,
     pub options: TargetOptions
 }
 
@@ -97,12 +57,9 @@ pub enum TargetEntry {
     ObjUrl(Url),
     User(String),
     Password(String),
-    Key(PathBuf),
     Reliable(bool),
-    Crypto(CryptoMode),
     UploadCost(i32),
     DownloadCost(i32),
-    MirrorKeys(bool)
 }
 
 // set up the parser and run it
@@ -119,29 +76,17 @@ impl_rdp! {
         integer = @{ ['0'..'9']+ }
 
         target_name = @{(['a'..'z'] | ['A' .. 'z'] | ["-"])+}
-        key_name = @{(['a'..'z'] | ['A' .. 'z'] | ["-"])+}
 
         par_tgt_name = _{["("] ~ target_name ~ [")"]}
         url = { ["url"] ~ eq ~ string ~ nl}
         user = { ["user"] ~ eq ~ string ~ nl}
         password = { ["password"] ~ eq ~ string ~ nl}
-        key = { ["key-file"] ~ eq ~ string ~ nl}
         reliable = { ["reliable"] ~ eq ~ boolean ~ nl}
         upload_cost = { ["upload-cost"] ~ eq ~ integer ~ nl}
         download_cost = { ["download-cost"] ~ eq ~ integer ~ nl}
-        mirror_keys = { ["mirror-global-keys"] ~ eq ~ boolean ~ nl}
-        signature_cfg = { ["signature"] ~ ["{"] ~ ["key"] ~ eq ~ key_name ~ ["}"]}
-        symmetric_cfg = { ["symmetric"] ~ ["{"] ~ ["key"] ~ eq ~ key_name ~ ["}"]}
-        both_cfg = _{(signature_cfg ~ nl? ~ symmetric_cfg) | (symmetric_cfg ~ nl? ~ signature_cfg)}
-        crypto_none = {["none"]}
-        crypto_immut = {["immutable"] ~ ["{"] ~ nl? ~ signature_cfg ~ nl? ~ ["}"]}
-        crypto_datasec = {["data-secure"] ~ ["{"] ~ nl? ~ both_cfg ~ nl? ~ ["}"]}
-        crypto_secure = {["secure"] ~ ["{"] ~ nl? ~ both_cfg ~ nl? ~ ["}"]}
-        crypto_val = _{crypto_none | crypto_immut | crypto_datasec | crypto_secure}
-        crypto = {["security"] ~ eq ~ crypto_val ~ nl}
-        option = _{ reliable | upload_cost | download_cost | mirror_keys}
+        option = _{ reliable | upload_cost | download_cost}
         target = { ["target"] ~ par_tgt_name ~ open ~
-                (url | user | password | key | option | crypto)+ ~
+                (url | user | password | option)+ ~
             close}
         target_group = {
             ["target-group"] ~ ["("] ~ target_name ~ [")"] ~ open ~
@@ -158,35 +103,16 @@ impl_rdp! {
         _bool(&self) -> bool { (&b: boolean) => (b == "true") }
         _integer(&self) -> i32 {
             (&x: integer) => x.parse::<i32>().unwrap() }
-        _crypto_both(&self) -> (SignatureConfig, EncryptionConfig) {
-            (_: signature_cfg, &sk: key_name, _: symmetric_cfg, &mk: key_name) =>
-                (SignatureConfig{key: String::from(sk)},
-                 EncryptionConfig{key: String::from(mk)}),
-            (_: symmetric_cfg, &mk: key_name, _: signature_cfg, &sk: key_name) =>
-                (SignatureConfig{key: String::from(sk)},
-                 EncryptionConfig{key: String::from(mk)}),
-        }
-        _crypto_info(&self) -> Result<CryptoMode, String> {
-            (_: crypto_none) => Ok(CryptoMode::NoEncryption),
-            (_: crypto_immut, _: signature_cfg, &k: key_name) =>
-                Ok(CryptoMode::Immutable(SignatureConfig { key: String::from(k) })),
-            (_: crypto_datasec, b: _crypto_both()) => Ok(CryptoMode::DataSecure(b.0, b.1)),
-            (_: crypto_secure, b: _crypto_both()) => Ok(CryptoMode::FullySecure(b.0, b.1))
-        }
         _tgt_entry(&self) -> Result<TargetEntry, String> {
             (_: url, s: _string()) =>
                 Ok(TargetEntry::ObjUrl(Url::parse(&s).unwrap())),
             (_: user, s: _string()) => Ok(TargetEntry::User(s)),
             (_: password, s: _string()) => Ok(TargetEntry::Password(s)),
-            (_: key, s: _string()) => Ok(TargetEntry::Key(PathBuf::from(s))),
             (_: reliable, b: _bool()) => Ok(TargetEntry::Reliable(b)),
-            (_: crypto, c: _crypto_info()) => { c.map(TargetEntry::Crypto) },
             (_: upload_cost, n: _integer()) => {
                 Ok(TargetEntry::UploadCost(n)) },
             (_: download_cost, n: _integer()) => {
                 Ok(TargetEntry::DownloadCost(n)) },
-            (_: mirror_keys, x: _bool()) => {
-                Ok(TargetEntry::MirrorKeys(x)) }
         }
         _target_entries(&self) -> Result<Vec<TargetEntry>, String> {
             (e: _tgt_entry(), _: close) => {
@@ -208,12 +134,9 @@ impl_rdp! {
                 let mut url = None;
                 let mut user = None;
                 let mut password = None;
-                let mut key = None;
                 let mut reliable = None;
-                let mut crypto = None;
                 let mut upload = None;
                 let mut download = None;
-                let mut mirror = None;
 
                 if body.is_err() { return Err(body.unwrap_err()); }
 
@@ -231,18 +154,10 @@ impl_rdp! {
                             if password.is_some() {
                                 return Err(String::from("Duplicate password found")); }
                             else { password = Some(p) } }
-                        TargetEntry::Key(p) => {
-                            if key.is_some() {
-                                return Err(String::from("Duplicate key found")); }
-                            else { key = Some(p) } }
                         TargetEntry::Reliable(x) => {
                             if reliable.is_some() {
                                 return Err(String::from("Duplicate reliable found")); }
                             else { reliable = Some(x) } }
-                        TargetEntry::Crypto(c) => {
-                            if crypto.is_some() {
-                                return Err(String::from("Duplicate crypto found")); }
-                            else { crypto = Some(c) } }
                         TargetEntry::UploadCost(x) => {
                             if upload.is_some() {
                                 return Err(String::from("Duplicate upload-cost found")); }
@@ -251,28 +166,20 @@ impl_rdp! {
                             if download.is_some() {
                                 return Err(String::from("Duplicate download-cost found")); }
                             else { download = Some(x) } }
-                        TargetEntry::MirrorKeys(x) => {
-                            if mirror.is_some() {
-                                return Err(String::from("Duplicate mirror-keys found")); }
-                            else { mirror = Some(x) } }
                     }
                 }
 
                 if url.is_none() {
                     return Err(String::from("Target group must contain URL")); }
-                if crypto.is_none() {
-                    return Err(String::from("Target group must set crypto mode")); }
 
                 Ok(BackupTarget {
                     name: String::from(n),
                     url: url.unwrap(),
-                    user: user, password: password, key: key,
+                    user: user, password: password,
                     options: TargetOptions {
                         reliable: reliable.unwrap_or(false),
-                        crypto: crypto.unwrap(),
                         upload_cost: upload.unwrap_or(1) as i32,
-                        download_cost: download.unwrap_or(1) as i32,
-                        mirror_global_keys: mirror.unwrap_or(true)}})
+                        download_cost: download.unwrap_or(1) as i32}})
             }
         }
         _targets(&self) -> Vec<String> {
@@ -316,35 +223,10 @@ impl BackupTarget {
         writeln!(f, "\turl = \"{}\"", self.url)?;
         if let Some(ref u) = self.user { writeln!(f, "\tuser = \"{}\"", u)?; }
         if let Some(ref p) = self.password {writeln!(f, "\tpassword = \"{}\"", p)?;}
-        if let Some(ref k) = self.key {writeln!(f, "\tkey = \"{}\"", k.display())?;}
         if self.options.reliable { writeln!(f, "\treliable = true")?; }
-        if !self.options.mirror_global_keys { writeln!(f, "\tmirror-global-keys = false")?; }
         writeln!(f, "\tupload-cost = {}", self.options.upload_cost)?;
         writeln!(f, "\tdownload-cost = {}", self.options.download_cost)?;
         write!(f, "\tsecurity = ")?;
-
-        match self.options.crypto {
-            CryptoMode::NoEncryption => {
-                writeln!(f, "none")?;
-            }
-            CryptoMode::Immutable(ref sig) => {
-                writeln!(f, "immutable {{")?;
-                writeln!(f, "\t\tsignature {{ key = {} }}", sig.key)?;
-                writeln!(f, "\t}}")?;
-            }
-            CryptoMode::DataSecure(ref sig,ref symm) => {
-                writeln!(f, "data-secure {{")?;
-                writeln!(f, "\t\tsignature {{ key = {} }}", sig.key)?;
-                writeln!(f, "\t\tsymmetric {{ key = {} }}", symm.key)?;
-                writeln!(f, "\t}}")?;
-            }
-            CryptoMode::FullySecure(ref sig,ref symm) => {
-                writeln!(f, "secure {{")?;
-                writeln!(f, "\t\tsignature {{ key = {} }}", sig.key)?;
-                writeln!(f, "\t\tsymmetric {{ key = {} }}", symm.key)?;
-                writeln!(f, "\t}}")?;
-            }
-        }
         Ok(())
     }
 }

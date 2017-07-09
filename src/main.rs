@@ -65,6 +65,17 @@ fn do_keys(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
 }
 
 fn do_dest(args: &clap::ArgMatches, opts: &GlobalOptions) {
+    match args.subcommand() {
+        ("add", Some(m)) => { // add a destination
+        },
+        ("list", Some(m)) => { // list destinations
+        },
+        ("remove", Some(m)) => { // remove destinations
+        },
+        ("test", Some(m)) => { // test destination connectivity
+        },
+        (_, _) => panic!("No subcommand handler found")
+    }
 }
 
 fn do_test(args: &clap::ArgMatches, opts: &GlobalOptions) {
@@ -170,7 +181,9 @@ fn main() {
            "Match data based on whether it exists on the host")))
         (@subcommand snap =>
          (about: "Take a snapshot of local files")
-         (@arg local: +takes_value ... "Files or directories to snapshot"))
+         (@arg local: +takes_value ... "Files or directories to snapshot")
+         (@arg no_trust_mtime: -T --("no-trust-mtime")
+          "Use content hashes to check for file changes rather than FS's mtime"))
         (@subcommand restore =>
          (about: "Restore local files from backup")
          (@arg as_of: -t --time +takes_value
@@ -188,14 +201,18 @@ fn main() {
         ).get_matches();
 
     // load a config file
-    let config_path = std::path::PathBuf::from(
-        opt_matches.value_of("CONFIG").unwrap_or("foo.cfg"));
+    let config_path = opt_matches
+        .value_of("CONFIG")
+        .map(Path::new)
+        .map(Path::to_path_buf)
+        .unwrap_or(std::env::home_dir().unwrap().join(".bkprc"));
     let cfg = config::Config::load(&config_path);
     if let Err(e) = cfg {
         let errstr = match e {
             config::ConfigErr::ParseError(x) => x,
             config::ConfigErr::IOError(x) => String::from(x.description()) };
-        writeln!(std::io::stderr(), "bkp: Cannot load config file: {}", errstr).unwrap();
+        writeln!(std::io::stderr(),
+            "bkp: Cannot load config file: {}", errstr).unwrap();
         std::process::exit(1);
     }
 
