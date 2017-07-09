@@ -1,6 +1,7 @@
 extern crate ssh2;
 extern crate tokio_core;
 extern crate futures;
+extern crate owning_ref;
 
 use std::env;
 use std::io;
@@ -14,9 +15,12 @@ use self::ssh2::{Session, Sftp};
 use self::futures::future;
 use self::futures::future::Future;
 use self::futures::sync::oneshot;
+use self::owning_ref::OwningHandle;
 
 use metadata::{IdentityTag, MetaObject};
-use remote::{RemoteBackend, BackendError, BoxedFuture};
+use remote::*;
+
+const PERM_0755: i32 = 0xe4;
 
 pub struct ConnectOptions<'a> {
     addr: SocketAddr,
@@ -25,10 +29,11 @@ pub struct ConnectOptions<'a> {
 }
 
 pub struct Backend {
-    sess: Session,
+    sess: OwningHandle<Box<Session>, Box<Sftp<'static>>>,
     sock: TcpStream,
-    sftp: Sftp<'static>,
-    root: PathBuf
+
+    /// The root path on the remote host
+    root: PathBuf,
 }
 
 impl From<io::Error> for BackendError {
@@ -48,15 +53,20 @@ impl From<oneshot::Canceled> for BackendError {
 impl Backend {
     /// Initialize a store on the target if one doesn't exist already
     fn initialize(&mut self) -> Result<(), BackendError> {
+        if self.sess.stat(&self.root.join("metadata")).is_err() ||
+            self.sess.stat(&self.root.join("blocks")).is_err() {
+            self.sess.mkdir(&self.root.join("metadata"), PERM_0755)?;
+            self.sess.mkdir(&self.root.join("blocks"), PERM_0755)?;
+        }
         Ok(())
     }
 
     /// Lock the target atomically. If we fail, return an error.
     fn lock(&mut self) -> Result<(), BackendError> {
         let lock_path = self.root.join("bkp.lock");
-        let mut f = self.sftp.open_mode(&lock_path,
+        let mut f = self.sess.open_mode(&lock_path,
                                         self::ssh2::CREATE,
-                                        0xe4, // 0755
+                                        PERM_0755,
                                         self::ssh2::OpenType::File)?;
         Ok(())
     }
@@ -64,8 +74,32 @@ impl Backend {
     /// Release an atomic lock on the target
     fn unlock(&mut self) -> Result<(), BackendError> {
         let lock_path = self.root.join("bkp.lock");
-        self.sftp.unlink(&lock_path)?;
+        self.sess.unlink(&lock_path)?;
         Ok(())
+    }
+}
+
+impl MetadataStore for Backend {
+    fn list_meta(&mut self) -> BoxedFuture<Vec<IdentityTag>> {
+        unimplemented!()
+    }
+
+    fn read_meta(&mut self, ident: &IdentityTag) -> BoxedFuture<MetaObject> {
+        unimplemented!()
+    }
+
+    fn write_meta(&mut self, obj: &MetaObject) -> BoxedFuture<IdentityTag> {
+        unimplemented!()
+    }
+}
+
+impl BlockStore for Backend {
+    fn read_block(&mut self, ident: &IdentityTag) -> BoxedFuture<Vec<u8>> {
+        unimplemented!()
+    }
+
+    fn write_block(&mut self, data: &[u8]) -> BoxedFuture<IdentityTag> {
+        unimplemented!()
     }
 }
 
@@ -96,34 +130,25 @@ impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
         }
 
         // set up sftp and create the backend
-        let mut sftp = sess.sftp()?;
+        let sess = Box::new(sess);
+        let sess_box = OwningHandle::try_new(sess,
+                         |p| {
+                             unsafe {
+                                 (*p).sftp().map(Box::new)
+                             }
+                         })?;
         let mut backend = Backend {
-            sess: sess,
+            sess: sess_box,
             sock: conn,
-            sftp: sftp,
-            root: opts.root.to_owned()
+            root: opts.root.to_owned(),
         };
 
-        // acquire exclusive access
-        backend.initialize()?;
+        // acquire exclusive access *before* initializing so two processes don't
+        // clobber each other
         backend.lock()?;
+        backend.initialize()?;
 
         Ok(backend)
-    }
-
-    fn sync_metadata(&mut self, cacheroot: &Path) -> BoxedFuture<()> {
-    }
-
-    fn read_meta(&mut self, ident: &IdentityTag) -> BoxedFuture<MetaObject> {
-    }
-
-    fn write_meta(&mut self, obj: &MetaObject) -> BoxedFuture<IdentityTag> {
-    }
-
-    fn read_block(&mut self, ident: &IdentityTag) -> BoxedFuture<Vec<u8>> {
-    }
-
-    fn write_block(&mut self, data: &[u8]) -> BoxedFuture<IdentityTag> {
     }
 }
 

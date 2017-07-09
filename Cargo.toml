@@ -16,6 +16,7 @@ url = "1.4.0"
 rpassword = "0.4.0"
 untrusted = "0.5"
 byteorder = "1.0.0"
+owning_ref = "0.3"
 
 ssh2 = "0.3.1"
 
