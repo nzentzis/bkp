@@ -17,6 +17,7 @@ rpassword = "0.4.0"
 untrusted = "0.5"
 byteorder = "1.0.0"
 owning_ref = "0.3"
+hostname = "0.1"
 
 ssh2 = "0.3.1"
 

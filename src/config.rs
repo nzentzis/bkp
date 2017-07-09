@@ -1,3 +1,5 @@
+extern crate hostname;
+
 use url::Url;
 use std::path::{PathBuf,Path};
 use std::fs::File;
@@ -40,7 +42,10 @@ pub struct Config {
     /// The set of available backup targets
     pub targets: Vec<BackupTarget>,
     /// Backup target groups
-    pub target_groups: Vec<TargetGroup>
+    pub target_groups: Vec<TargetGroup>,
+
+    /// The current node's name
+    pub node_name: String
 }
 
 #[derive(Debug)]
@@ -93,8 +98,9 @@ impl_rdp! {
             ["target-group"] ~ ["("] ~ target_name ~ [")"] ~ open ~
                 target_name+ ~
             close}
+        node_name = { ["node-name"] ~ eq ~ target_name ~ nl }
         conf_eoi = {eoi}
-        config = { soi ~ ( target | target_group )* ~ conf_eoi }
+        config = { soi ~ ( node_name | target | target_group )* ~ conf_eoi }
     }
 
     process! {
@@ -114,6 +120,9 @@ impl_rdp! {
                 Ok(TargetEntry::UploadCost(n)) },
             (_: download_cost, n: _integer()) => {
                 Ok(TargetEntry::DownloadCost(n)) },
+        }
+        _node_name(&self) -> Result<String, String> {
+            (_: node_name, &n: target_name) => { Ok(String::from(n)) }
         }
         _target_entries(&self) -> Result<Vec<TargetEntry>, String> {
             (e: _tgt_entry(), _: close) => {
@@ -197,22 +206,41 @@ impl_rdp! {
         _target_group(&self) -> TargetGroup {
             (_: target_group, &nm: target_name, _: open, body: _targets()) => {
                 TargetGroup { name: String::from(nm), members: body }}}
-        _config_body(&self) -> Result<(Vec<BackupTarget>, Vec<TargetGroup>), String> {
-            (_: conf_eoi) => Ok((Vec::new(), Vec::new())),
+        _config_body(&self) -> Result<(Option<String>, Vec<BackupTarget>, Vec<TargetGroup>), String> {
+            (_: conf_eoi) => Ok((None, Vec::new(), Vec::new())),
+            (n: _node_name(), rest: _config_body()) =>
+                match n {
+                    Err(s) => Err(s),
+                    Ok(t) => rest.and_then(|mut r| {
+                        if r.0.is_some() {
+                            Err(String::from("Found duplicate node name"))
+                        } else {
+                            r.0 = Some(t);
+                            Ok(r)
+                        }
+                    })
+                },
             (tgt: _target(), rest: _config_body()) =>
                 match tgt {
                     Err(s) => Err(s),
-                    Ok(t) => rest.map(|mut r| {r.0.push(t); r})
+                    Ok(t) => rest.map(|mut r| {r.1.push(t); r})
                 },
             (grp: _target_group(), rest: _config_body()) =>
-                rest.and_then(|mut r| {r.1.push(grp); Ok(r)})
+                rest.and_then(|mut r| {r.2.push(grp); Ok(r)})
         }
         _config(&self) -> Result<Config, String> {
             (_: config, body: _config_body()) => {
-                body.map(|(tgts, grps)| Config {
-                    location: PathBuf::new(),
-                    targets: tgts,
-                    target_groups: grps })
+                body.and_then(|(nm, tgts, grps)|
+                    if let Some(nm) = nm {
+                        Ok(Config {
+                            node_name: nm,
+                            location: PathBuf::new(),
+                            targets: tgts,
+                            target_groups: grps
+                        })
+                    } else {
+                        Err(String::from("No node name specified"))
+                    })
             }
         }
     }
@@ -261,6 +289,7 @@ impl Config {
 
     pub fn save(&self) -> io::Result<()> {
         let mut file = File::create(&self.location)?;
+        writeln!(file, "node-name = {}", self.node_name)?;
         for t in self.targets.iter() { t.save(&mut file)?; }
         for t in self.target_groups.iter() { t.save(&mut file)?; }
         Ok(())
@@ -280,7 +309,8 @@ impl Default for Config {
         Config {
             location: env::home_dir().unwrap().join(".bkprc"),
             targets: Vec::new(),
-            target_groups: Vec::new()
+            target_groups: Vec::new(),
+            node_name: self::hostname::get_hostname().unwrap()
         }
     }
 }
