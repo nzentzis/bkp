@@ -98,7 +98,7 @@ impl_rdp! {
             ["target-group"] ~ ["("] ~ target_name ~ [")"] ~ open ~
                 target_name+ ~
             close}
-        node_name = { ["node-name"] ~ eq ~ target_name ~ nl }
+        node_name = { ["node-name"] ~ eq ~ target_name ~ nl? }
         conf_eoi = {eoi}
         config = { soi ~ ( node_name | target | target_group )* ~ conf_eoi }
     }
@@ -121,9 +121,8 @@ impl_rdp! {
             (_: download_cost, n: _integer()) => {
                 Ok(TargetEntry::DownloadCost(n)) },
         }
-        _node_name(&self) -> Result<String, String> {
-            (_: node_name, &n: target_name) => { Ok(String::from(n)) }
-        }
+        _node_name(&self) -> String {
+            (&n: target_name) => { String::from(n) } }
         _target_entries(&self) -> Result<Vec<TargetEntry>, String> {
             (e: _tgt_entry(), _: close) => {
                 let mut xs = Vec::new();
@@ -139,7 +138,7 @@ impl_rdp! {
                 }
         }
         _target(&self) -> Result<BackupTarget, String> {
-            (_: target, &n: target_name, _: open, body: _target_entries()) => {
+            (&n: target_name, _: open, body: _target_entries()) => {
                 // check entries
                 let mut url = None;
                 let mut user = None;
@@ -208,19 +207,16 @@ impl_rdp! {
                 TargetGroup { name: String::from(nm), members: body }}}
         _config_body(&self) -> Result<(Option<String>, Vec<BackupTarget>, Vec<TargetGroup>), String> {
             (_: conf_eoi) => Ok((None, Vec::new(), Vec::new())),
-            (n: _node_name(), rest: _config_body()) =>
-                match n {
-                    Err(s) => Err(s),
-                    Ok(t) => rest.and_then(|mut r| {
-                        if r.0.is_some() {
-                            Err(String::from("Found duplicate node name"))
-                        } else {
-                            r.0 = Some(t);
-                            Ok(r)
-                        }
-                    })
-                },
-            (tgt: _target(), rest: _config_body()) =>
+            (_: node_name, n: _node_name(), rest: _config_body()) =>
+                rest.and_then(|mut r| {
+                    if r.0.is_some() {
+                        Err(String::from("Found duplicate node name"))
+                    } else {
+                        r.0 = Some(n);
+                        Ok(r)
+                    }
+                }),
+            (_: target, tgt: _target(), rest: _config_body()) =>
                 match tgt {
                     Err(s) => Err(s),
                     Ok(t) => rest.map(|mut r| {r.1.push(t); r})
@@ -255,7 +251,7 @@ impl BackupTarget {
         if self.options.reliable { writeln!(f, "\treliable = true")?; }
         writeln!(f, "\tupload-cost = {}", self.options.upload_cost)?;
         writeln!(f, "\tdownload-cost = {}", self.options.download_cost)?;
-        write!(f, "\tsecurity = ")?;
+        write!(f, "}}")?;
         Ok(())
     }
 }
