@@ -10,7 +10,7 @@ use std::os::unix;
 use std::path::{Path, PathBuf};
 use std::marker::Sized;
 
-use self::futures::future::Future;
+use self::futures::Future;
 
 use metadata::{IdentityTag, MetaObject};
 
@@ -22,27 +22,27 @@ pub enum BackendError {
     IOError(io::Error)
 }
 
-pub type BoxedFuture<T> = Box<Future<Item=T, Error=BackendError> + Send>;
+pub type BackendResult<T> = Result<T, BackendError>;
 
 /// Trait for everything that stores metadata
 pub trait MetadataStore {
     /// List available metadata object IDs
-    fn list_meta(&mut self) -> BoxedFuture<Vec<IdentityTag>>;
+    fn list_meta(&mut self) -> BackendResult<Vec<IdentityTag>>;
     
     /// Try to read a metadata object by ID
-    fn read_meta(&mut self, ident: &IdentityTag) -> BoxedFuture<MetaObject>;
+    fn read_meta(&mut self, ident: &IdentityTag) -> BackendResult<MetaObject>;
 
     /// Try to read a metadata object by ID
-    fn write_meta(&mut self, obj: &MetaObject) -> BoxedFuture<IdentityTag>;
+    fn write_meta(&mut self, obj: &MetaObject) -> BackendResult<IdentityTag>;
 }
 
 /// Trait for everything that stores data blocks
 pub trait BlockStore {
     /// Read a block from the remote by its identity tag
-    fn read_block(&mut self, ident: &IdentityTag) -> BoxedFuture<Vec<u8>>;
+    fn read_block(&mut self, ident: &IdentityTag) -> BackendResult<Vec<u8>>;
 
     /// Write a given block of data to the remote
-    fn write_block(&mut self, data: &[u8]) -> BoxedFuture<IdentityTag>;
+    fn write_block(&mut self, data: &[u8]) -> BackendResult<IdentityTag>;
 }
 
 /// Marker type for storage backends

@@ -21,6 +21,13 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path,PathBuf};
 
+macro_rules! err_write {
+    ($s: tt) => {
+        writeln!(std::io::stderr(), $s).ok().unwrap_or(())};
+    ($s: tt, $($e: expr),*) => {
+        writeln!(std::io::stderr(), $s, $($e,)*).ok().unwrap_or(())}
+}
+
 struct GlobalOptions {
     data_dir: PathBuf,
     keystore: keys::Keystore,
@@ -33,6 +40,9 @@ fn fail_error<E: Error>(msg: &str, err: E) {
     writeln!(std::io::stderr(), "bkp: {}: {}", msg, err).unwrap();
     std::process::exit(1);
 }
+
+//fn connect_backend(b: String) -> Box<remote::Backend> {
+//}
 
 fn do_keys(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
     match args.subcommand() {
@@ -64,11 +74,53 @@ fn do_keys(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
     }
 }
 
-fn do_dest(args: &clap::ArgMatches, opts: &GlobalOptions) {
+fn do_dest(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
     match args.subcommand() {
         ("add", Some(m)) => { // add a destination
+            let name = m.value_of("name").unwrap();
+            let url = m.value_of("url").unwrap();
+            let user = m.value_of("user");
+            let password = m.value_of("password");
+
+            // make sure the specified destination doesn't already exist
+            if opts.cfg.targets.iter().any(|t| {t.name == name}) {
+                err_write!("bkp: Destination '{}' already exists", name);
+                std::process::exit(1);
+            }
+
+            // parse the target URL
+            let url = match Url::parse(&url) {
+                Ok(u) => u,
+                Err(e) => {
+                    fail_error("Cannot parse given URL", e);
+                    unreachable!();
+                }
+            };
+
+            // build the new target
+            let tgt = config::BackupTarget {
+                name: name.to_owned(),
+                url: url,
+                user: user.map(String::from),
+                password: password.map(String::from),
+                options: config::TargetOptions {
+                    reliable: true,
+                    upload_cost: 1,
+                    download_cost: 1
+                }
+            };
+            opts.cfg.targets.push(tgt);
+            if let Err(e) = opts.cfg.save() {
+                fail_error("Failed to save config file", e);
+            }
         },
         ("list", Some(m)) => { // list destinations
+            let max_left_col = opts.cfg.targets.iter()
+                    .map(|ref x| x.name.len())
+                    .max().unwrap_or(0);
+            for t in opts.cfg.targets.iter() {
+                println!("{1:0$}  {2}", max_left_col, t.name, t.url.as_str());
+            }
         },
         ("remove", Some(m)) => { // remove destinations
         },
@@ -98,11 +150,11 @@ fn load_config(pth: &Path) -> config::Config {
     if let Err(e) = cfg {
         if let config::ConfigErr::IOError(ref err) = e {
             if err.kind() == std::io::ErrorKind::NotFound {
-                writeln!(std::io::stderr(), "Creating new configuration file");
+                err_write!("Creating new configuration file");
 
                 // try to create a new config
                 let cfg = config::Config::default();
-                cfg.save();
+                cfg.save().ok().unwrap_or(());
                 return cfg
             }
         }
@@ -157,8 +209,7 @@ fn main() {
               "The new destination's URL" )
           (@arg user: -u --user +takes_value "Set the associated username")
           (@arg password: -p --password +takes_value
-           "Set the associated password")
-          (@arg key: -k --key +takes_value "Set the associated key file"))
+           "Set the associated password"))
          (@subcommand list =>
           (about: "List the available destinations")
           (@arg no_groups: -n --("no-groups")
@@ -256,8 +307,7 @@ fn main() {
         Ok(_) => match keys::Keystore::open(&kspath) {
             Ok(k) => k,
             Err(e) => {
-                writeln!(std::io::stderr(), "bkp: Cannot open keystore: {}",
-                    kspath.display());
+                err_write!("bkp: Cannot open keystore: {}", e.description());
                 std::process::exit(1);
             }
         },
@@ -265,8 +315,7 @@ fn main() {
             match keys::Keystore::create(&kspath) {
                 Ok(k) => k,
                 Err(e) => {
-                    writeln!(std::io::stderr(), "bkp: Cannot create keystore: {}",
-                        kspath.display());
+                    err_write!("bkp: Cannot create keystore: {}", e.description());
                     std::process::exit(1);
                 }
             }
@@ -289,7 +338,7 @@ fn main() {
     // figure out what to do
     match opt_matches.subcommand() {
         ("", _) => { println!("bkp: No subcommand specified"); },
-        ("dest", Some(m)) => do_dest(m, &global_flags),
+        ("dest", Some(m)) => do_dest(m, &mut global_flags),
         ("keys", Some(m)) => do_keys(m, &mut global_flags),
         ("test", Some(m)) => do_test(m, &global_flags),
         ("stat", Some(m)) => do_stat(m, &global_flags),

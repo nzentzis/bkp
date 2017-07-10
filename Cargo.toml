@@ -6,7 +6,7 @@ authors = ["Noah Zentzis <nzentzis@gmail.com>"]
 [dependencies]
 tokio-proto = "0.1"
 tokio-core = "0.1"
-futures = "0.1"
+futures = "^0.1.14"
 capnp = "0.8"
 native-tls = "0.1"
 clap = "2.24"

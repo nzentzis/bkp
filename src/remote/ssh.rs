@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::net::{SocketAddr, TcpStream};
 use std::boxed::Box;
 use std::thread;
+use std::sync::Mutex;
+use std::iter::FromIterator;
 
 use self::ssh2::{Session, Sftp};
 use self::futures::future;
@@ -21,19 +23,24 @@ use metadata::{IdentityTag, MetaObject};
 use remote::*;
 
 const PERM_0755: i32 = 0xe4;
+const TAG_LENGTH: usize = 32;
 
 pub struct ConnectOptions<'a> {
     addr: SocketAddr,
     user: String,
-    root: &'a Path
+    root: &'a Path,
+    nodename: String
 }
 
 pub struct Backend {
-    sess: OwningHandle<Box<Session>, Box<Sftp<'static>>>,
+    sess: Mutex<OwningHandle<Box<Session>, Box<Sftp<'static>>>>,
     sock: TcpStream,
 
     /// The root path on the remote host
     root: PathBuf,
+
+    /// The node name to use on the remote host
+    node: String
 }
 
 impl From<io::Error> for BackendError {
@@ -53,10 +60,11 @@ impl From<oneshot::Canceled> for BackendError {
 impl Backend {
     /// Initialize a store on the target if one doesn't exist already
     fn initialize(&mut self) -> Result<(), BackendError> {
-        if self.sess.stat(&self.root.join("metadata")).is_err() ||
-            self.sess.stat(&self.root.join("blocks")).is_err() {
-            self.sess.mkdir(&self.root.join("metadata"), PERM_0755)?;
-            self.sess.mkdir(&self.root.join("blocks"), PERM_0755)?;
+        let sess = self.sess.lock().unwrap();
+        if sess.stat(&self.root.join("metadata")).is_err() ||
+            sess.stat(&self.root.join("blocks")).is_err() {
+            sess.mkdir(&self.root.join("metadata"), PERM_0755)?;
+            sess.mkdir(&self.root.join("blocks"), PERM_0755)?;
         }
         Ok(())
     }
@@ -64,41 +72,81 @@ impl Backend {
     /// Lock the target atomically. If we fail, return an error.
     fn lock(&mut self) -> Result<(), BackendError> {
         let lock_path = self.root.join("bkp.lock");
-        let mut f = self.sess.open_mode(&lock_path,
-                                        self::ssh2::CREATE,
-                                        PERM_0755,
-                                        self::ssh2::OpenType::File)?;
+        let sess = self.sess.lock().unwrap();
+        let mut f = sess.open_mode(&lock_path, self::ssh2::CREATE,
+                                   PERM_0755, self::ssh2::OpenType::File)?;
         Ok(())
     }
 
     /// Release an atomic lock on the target
     fn unlock(&mut self) -> Result<(), BackendError> {
         let lock_path = self.root.join("bkp.lock");
-        self.sess.unlink(&lock_path)?;
+        let sess = self.sess.lock().unwrap();
+        sess.unlink(&lock_path)?;
         Ok(())
     }
 }
 
 impl MetadataStore for Backend {
-    fn list_meta(&mut self) -> BoxedFuture<Vec<IdentityTag>> {
+    fn list_meta(&mut self) -> BackendResult<Vec<IdentityTag>> {
+        let sess = self.sess.lock().unwrap();
+        let meta_path = self.root.join("metadata");
+        let prefix_files = sess.readdir(&meta_path)?;
+
+        let mut result = Vec::new();
+
+        for (root,stat) in prefix_files.into_iter() {
+            if stat.is_dir() {
+                // prefix dir
+                for (file,fstat) in sess.readdir(&root)?.into_iter() {
+                    if let Some(nm) = file.file_name() {
+                        let nm = nm.to_str();
+                        if nm.is_none() {
+                            continue;
+                        }
+                        let nm = nm.unwrap();
+
+                        // parse the identity tag out of the filename
+                        if !nm.chars().all(|ref x| x.is_digit(16)) ||
+                                nm.len() != TAG_LENGTH {
+                            // not a valid object name
+                            continue;
+                        }
+                        let mut tag = [0u8; TAG_LENGTH];
+                        let chars: Vec<char> = nm.chars().collect();
+
+                        for (i,b) in chars.chunks(2).enumerate() {
+                            tag[i] = u8::from_str_radix(
+                                &String::from_iter(b.iter()), 16).unwrap();
+                        }
+                        result.push(tag);
+                    }
+                }
+            } else {
+                // packfile
+                // TODO: Implement this
+                unimplemented!()
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn read_meta(&mut self, ident: &IdentityTag) -> BackendResult<MetaObject> {
         unimplemented!()
     }
 
-    fn read_meta(&mut self, ident: &IdentityTag) -> BoxedFuture<MetaObject> {
-        unimplemented!()
-    }
-
-    fn write_meta(&mut self, obj: &MetaObject) -> BoxedFuture<IdentityTag> {
+    fn write_meta(&mut self, obj: &MetaObject) -> BackendResult<IdentityTag> {
         unimplemented!()
     }
 }
 
 impl BlockStore for Backend {
-    fn read_block(&mut self, ident: &IdentityTag) -> BoxedFuture<Vec<u8>> {
+    fn read_block(&mut self, ident: &IdentityTag) -> BackendResult<Vec<u8>> {
         unimplemented!()
     }
 
-    fn write_block(&mut self, data: &[u8]) -> BoxedFuture<IdentityTag> {
+    fn write_block(&mut self, data: &[u8]) -> BackendResult<IdentityTag> {
         unimplemented!()
     }
 }
@@ -138,9 +186,10 @@ impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
                              }
                          })?;
         let mut backend = Backend {
-            sess: sess_box,
+            sess: Mutex::new(sess_box),
             sock: conn,
             root: opts.root.to_owned(),
+            node: opts.nodename
         };
 
         // acquire exclusive access *before* initializing so two processes don't
