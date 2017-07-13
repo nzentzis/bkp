@@ -41,17 +41,46 @@ fn fail_error<E: Error>(msg: &str, err: E) {
     std::process::exit(1);
 }
 
-//fn connect_backend(b: String) -> Box<remote::Backend> {
-//}
+trait UnwrapOrFail<T> {
+    /// Unwrap the result or fail with the given error message
+    fn unwrap_or_fail(self, msg: &str) -> T;
+}
+
+impl<T, E: Error> UnwrapOrFail<T> for Result<T, E> {
+    fn unwrap_or_fail(self, msg: &str) -> T {
+        match self {
+            Err(e) => {
+                fail_error(msg, e);
+                unreachable!()
+            },
+            Ok(x) => x
+        }
+    }
+}
+
+fn connect_backend(name: String, opts: &GlobalOptions)
+        -> Result<Box<remote::Backend>, remote::BackendError> {
+    use remote::BackendError;
+    if let Some(t) = opts.cfg.find_target(&name) {
+        remote::connect_tgt(t, &opts.cfg.node_name)
+    } else if let Some(g) = opts.cfg.find_group(&name) {
+        let tgts = g.members.iter()
+            .map(|ref n| opts.cfg.find_target(&n)
+                                 .ok_or(BackendError::InvalidOption))
+            .collect::<Result<Vec<&config::BackupTarget>, BackendError>>()?;
+        remote::connect_group(tgts)
+    } else {
+        Err(BackendError::InvalidOption)
+    }
+}
 
 fn do_keys(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
     match args.subcommand() {
         ("", _) => { // list keys
-            match opts.keystore.list_keys() {
-                Ok(ks) => for e in ks {
-                    println!("{} {}", e.1.describe(), e.0);
-                },
-                Err(e) => fail_error("Cannot list stored keys", e)
+            let keys = opts.keystore.list_keys()
+                .unwrap_or_fail("Cannot list stored keys");
+            for e in keys {
+                println!("{} {}", e.1.describe(), e.0);
             }
         }
         ("new", Some(m)) => { // create a new key
@@ -60,9 +89,8 @@ fn do_keys(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
                 "asymm" => keys::KeyType::Asymm,
                 "symm" => keys::KeyType::Symm,
                 _ => panic!("Impossible option found") };
-            if let Err(e) = opts.keystore.new_key(name, t) {
-                fail_error("Failed to create key", e);
-            }
+            opts.keystore.new_key(name, t)
+                .unwrap_or_fail("Failed to create key");
         }
         ("import", Some(m)) => { // import keys
         }
@@ -89,13 +117,8 @@ fn do_dest(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
             }
 
             // parse the target URL
-            let url = match Url::parse(&url) {
-                Ok(u) => u,
-                Err(e) => {
-                    fail_error("Cannot parse given URL", e);
-                    unreachable!();
-                }
-            };
+            let url = Url::parse(&url)
+                .unwrap_or_fail("Cannot parse given URL");
 
             // build the new target
             let tgt = config::BackupTarget {
@@ -110,9 +133,7 @@ fn do_dest(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
                 }
             };
             opts.cfg.targets.push(tgt);
-            if let Err(e) = opts.cfg.save() {
-                fail_error("Failed to save config file", e);
-            }
+            opts.cfg.save().unwrap_or_fail("Failed to save config file");
         },
         ("list", Some(m)) => { // list destinations
             let max_left_col = opts.cfg.targets.iter()
@@ -123,26 +144,37 @@ fn do_dest(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
             }
         },
         ("remove", Some(m)) => { // remove destinations
+            unimplemented!()
         },
         ("test", Some(m)) => { // test destination connectivity
+            let name = m.value_of("name").unwrap();
+            let tgt = connect_backend(name.to_owned(), &opts)
+                .unwrap_or_fail("Cannot connect to remote backend");
         },
         (_, _) => panic!("No subcommand handler found")
     }
 }
 
 fn do_test(args: &clap::ArgMatches, opts: &GlobalOptions) {
+    //let profile = args.value_of("profile").unwrap();
+    //let all = args.is_present("all");
+    unimplemented!()
 }
 
 fn do_stat(args: &clap::ArgMatches, opts: &GlobalOptions) {
+    unimplemented!()
 }
 
 fn do_clean(args: &clap::ArgMatches, opts: &GlobalOptions) {
+    unimplemented!()
 }
 
 fn do_snap(args: &clap::ArgMatches, opts: &GlobalOptions) {
+    unimplemented!()
 }
 
 fn do_restore(args: &clap::ArgMatches, opts: &GlobalOptions) {
+    unimplemented!()
 }
 
 fn load_config(pth: &Path) -> config::Config {

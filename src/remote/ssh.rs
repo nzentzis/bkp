@@ -26,10 +26,10 @@ const PERM_0755: i32 = 0xe4;
 const TAG_LENGTH: usize = 32;
 
 pub struct ConnectOptions<'a> {
-    addr: SocketAddr,
-    user: String,
-    root: &'a Path,
-    nodename: String
+    pub addr: SocketAddr,
+    pub user: String,
+    pub root: &'a Path,
+    pub nodename: String
 }
 
 pub struct Backend {
@@ -48,7 +48,9 @@ impl From<io::Error> for BackendError {
 }
 
 impl From<self::ssh2::Error> for BackendError {
-    fn from(e: self::ssh2::Error) -> BackendError { BackendError::CommsError }
+    fn from(e: self::ssh2::Error) -> BackendError {
+        BackendError::BackendError(String::from(e.message()))
+    }
 }
 
 impl From<oneshot::Canceled> for BackendError {
