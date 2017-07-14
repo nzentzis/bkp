@@ -28,6 +28,7 @@ const TAG_LENGTH: usize = 32;
 pub struct ConnectOptions<'a> {
     pub addr: SocketAddr,
     pub user: String,
+    pub key_pass: Option<String>,
     pub root: &'a Path,
     pub nodename: String
 }
@@ -49,7 +50,7 @@ impl From<io::Error> for BackendError {
 
 impl From<self::ssh2::Error> for BackendError {
     fn from(e: self::ssh2::Error) -> BackendError {
-        BackendError::BackendError(String::from(e.message()))
+        BackendError::BackendError(format!("libssh2 failure {}", e))
     }
 }
 
@@ -153,6 +154,27 @@ impl BlockStore for Backend {
     }
 }
 
+fn authenticate(sess: &mut Session, user: &str, pass: Option<&String>)
+        -> Result<(), BackendError> {
+    if let Ok(_) = sess.userauth_agent(&user) {
+        return Ok(());
+    }
+
+    // resort to looking through ~/.ssh
+    let dot_ssh = env::home_dir().unwrap().join(".ssh");
+
+    let id_rsa = dot_ssh.join("id_rsa");
+    let id_rsa_pub = dot_ssh.join("id_rsa.pub");
+    if id_rsa.exists() {
+        Ok(sess.userauth_pubkey_file(&user,
+                                     Some(&id_rsa_pub),
+                                     &id_rsa,
+                                     pass.map(|x| x.as_str()))?)
+    } else {
+        Err(BackendError::ConnectionFailed)
+    }
+}
+
 impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
     fn create(opts: ConnectOptions) -> Result<Backend, BackendError> {
         let mut sess = Session::new().ok_or(BackendError::ResourceError)?;
@@ -162,19 +184,7 @@ impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
         sess.set_compress(true);
         sess.handshake(&conn)?;
 
-        // try authenticating via an SSH agent, if one's available. Failing that
-        // look through ~/.ssh for identities and try them.
-        {
-            sess.userauth_agent(&opts.user)?;
-            let dot_ssh = env::home_dir().unwrap().join(".ssh");
-
-            let id_rsa = dot_ssh.join("id_rsa");
-            if id_rsa.exists() {
-                Ok(sess.userauth_pubkey_file(&opts.user, None, &id_rsa, None)?)
-            } else {
-                Err(BackendError::ConnectionFailed)
-            }
-        }?;
+        authenticate(&mut sess, &opts.user, opts.key_pass.as_ref())?;
         if !sess.authenticated() {
             return Err(BackendError::ConnectionFailed);
         }

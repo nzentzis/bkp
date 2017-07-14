@@ -126,13 +126,12 @@ pub fn connect_tgt(tgt: &config::BackupTarget, nodename: &str)
         -> BackendResult<Box<Backend>> {
     match tgt.url.scheme() {
         "ssh" => {
-            if tgt.url.username().is_empty() {
-                return Err(BackendError::InvalidOption)
-            }
+            let user = tgt.user.clone().unwrap_or(tgt.url.username().to_owned());
             let path = Path::new(tgt.url.path());
             let opts = ssh::ConnectOptions {
                 addr: url_addr(&tgt.url)?,
-                user: tgt.url.username().to_owned(),
+                user: user.to_owned(),
+                key_pass: tgt.password.clone(),
                 root: &path,
                 nodename: nodename.to_owned() };
             let backend = ssh::Backend::create(opts)?;
