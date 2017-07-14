@@ -22,7 +22,7 @@ use self::owning_ref::OwningHandle;
 use metadata::{IdentityTag, MetaObject};
 use remote::*;
 
-const PERM_0755: i32 = 0xe4;
+const PERM_0755: i32 = 0x1ed;
 const TAG_LENGTH: usize = 32;
 
 pub struct ConnectOptions<'a> {
@@ -203,6 +203,16 @@ impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
             root: opts.root.to_owned(),
             node: opts.nodename
         };
+
+        // make sure the target directory exists
+        {
+            let sess = backend.sess.lock().unwrap();
+            let s = sess.stat(&backend.root);
+            if s.is_err() {
+                return Err(BackendError::BackendError(
+                        String::from("cannot access directory")));
+            }
+        }
 
         // acquire exclusive access *before* initializing so two processes don't
         // clobber each other

@@ -127,7 +127,13 @@ pub fn connect_tgt(tgt: &config::BackupTarget, nodename: &str)
     match tgt.url.scheme() {
         "ssh" => {
             let user = tgt.user.clone().unwrap_or(tgt.url.username().to_owned());
-            let path = Path::new(tgt.url.path());
+            let path = {
+                let mut u = tgt.url.clone();
+                u.set_host(None);
+                u.set_scheme("file");
+                let p = &u.path()[1..];
+                PathBuf::from(p)
+            };
             let opts = ssh::ConnectOptions {
                 addr: url_addr(&tgt.url)?,
                 user: user.to_owned(),
