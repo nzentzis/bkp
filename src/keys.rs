@@ -83,16 +83,27 @@ fn find_mac_addr() -> Result<[u8; 6], Error> {
     }
 }
 
-pub struct MetaKey {
-    data: [u8; AEAD_KEY_LENGTH]
-}
+/// Decrypt some data in place
+fn decrypt_inplace(key: &[u8; AEAD_KEY_LENGTH],
+                   name: &str,
+                   mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+    let key = ring::aead::OpeningKey::new(&ring::aead::CHACHA20_POLY1305,
+                                          key).unwrap();
 
-pub struct DataKey {
-    data: [u8; AEAD_KEY_LENGTH],
-    rname: String
-}
+    // pull the top 12 bytes of nonce out
+    let (mut nonce, mut body) = data.split_at_mut(12);
+    if nonce.len() < 12 {
+        return Err(Error::CryptoError);
+    }
 
-impl MetaKey {
+    let res = ring::aead::open_in_place(&key, &nonce,
+                                        name.as_bytes(),
+                                        0, // no prefix
+                                        &mut body);
+    match res {
+        Err(_) => Err(Error::CryptoError),
+        Ok(pt) => Ok(pt.iter().cloned().collect())
+    }
 }
 
 // Note on Nonce Generation for ChaCha20-Poly1305:
@@ -112,57 +123,69 @@ impl MetaKey {
 //
 // This algorithm explicitly *does not* require that the nonces are secret, so
 // they are prepended to the message after encryption.
-impl DataKey {
-    /// Decrypt the data block in place
-    fn decrypt_inplace(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
-        let key = ring::aead::OpeningKey::new(&ring::aead::CHACHA20_POLY1305,
-                                              &self.data).unwrap();
 
-        // pull the top 12 bytes of nonce out
-        let (mut nonce, mut body) = data.split_at_mut(12);
-        if nonce.len() < 12 {
-            return Err(Error::CryptoError);
-        }
+/// Encrypt the data block in place
+fn encrypt_inplace(key: &[u8; AEAD_KEY_LENGTH],
+                   name: &str,
+                   mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+    // generate nonce
+    let mac: [u8; 6] = find_mac_addr()?;
+    let mut nonce: [u8; 12] = [0u8; 12];
+    SystemRandom::new().fill(&mut nonce);
+    for i in 0..6 { nonce[i] = mac[i]; }
 
-        let res = ring::aead::open_in_place(&key,
-                                            &nonce,
-                                            self.rname.as_bytes(),
-                                            0, // no prefix
-                                            &mut body);
-        match res {
-            Err(_) => Err(Error::CryptoError),
-            Ok(pt) => Ok(pt.iter().cloned().collect())
-        }
+    // insert the nonce at the beginning of the output
+    let tag_len = ring::aead::CHACHA20_POLY1305.tag_len();
+    let mut out = Vec::new();
+    out.extend_from_slice(&nonce);
+    out.resize(12+data.len()+tag_len, 0);
+
+    // build the key and encode the data
+    let key = ring::aead::SealingKey::new(&ring::aead::CHACHA20_POLY1305,
+                                          key).unwrap();
+    let res = ring::aead::seal_in_place(&key, &nonce,
+                                        name.as_bytes(),
+                                        &mut out[12..], tag_len);
+    match res {
+        Ok(sz) => {
+            out.resize(12+sz, 0);
+            Ok(out)
+        },
+        Err(_) => Err(Error::CryptoError)
+    }
+}
+
+pub struct MetaKey {
+    data: [u8; AEAD_KEY_LENGTH],
+    nname: String
+}
+
+pub struct DataKey {
+    data: [u8; AEAD_KEY_LENGTH],
+    rname: String
+}
+
+impl MetaKey {
+    /// Decrypt the data block
+    pub fn decrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+        decrypt_inplace(&self.data, &self.nname, data)
     }
 
-    /// Encrypt the data block in place
-    fn encrypt_inplace(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
-        // generate nonce
-        let mac: [u8; 6] = find_mac_addr()?;
-        let mut nonce: [u8; 12] = [0u8; 12];
-        SystemRandom::new().fill(&mut nonce);
-        for i in 0..6 { nonce[i] = mac[i]; }
+    /// Encrypt the data block
+    pub fn encrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+        encrypt_inplace(&self.data, &self.nname, data)
+    }
+}
 
-        // insert the nonce at the beginning of the output
-        let tag_len = ring::aead::CHACHA20_POLY1305.tag_len();
-        let mut out = Vec::new();
-        out.extend_from_slice(&nonce);
-        out.resize(12+data.len()+tag_len, 0);
+impl DataKey {
+    /// Decrypt the data block
+    pub fn decrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+        decrypt_inplace(&self.data, &self.rname, data)
+    }
 
-        // build the key and encode the data
-        let key = ring::aead::SealingKey::new(&ring::aead::CHACHA20_POLY1305,
-                                              &self.data).unwrap();
-        let res = ring::aead::seal_in_place(&key,
-                                            &nonce,
-                                            self.rname.as_bytes(),
-                                            &mut out[12..], tag_len);
-        match res {
-            Ok(sz) => {
-                out.resize(12+sz, 0);
-                Ok(out)
-            },
-            Err(_) => Err(Error::CryptoError)
-        }
+    /// Encrypt the data block
+    pub fn encrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+        encrypt_inplace(&self.data, &self.rname, data)
     }
 }
 
@@ -246,7 +269,10 @@ impl Keystore {
             f.sync_all()?;
         }
 
-        Ok(MetaKey { data: key })
+        Ok(MetaKey {
+            data: key,
+            nname: nodename.to_owned()
+        })
     }
 
     /// Create a new data block key
@@ -290,7 +316,10 @@ impl Keystore {
         } else {
             let mut arr = [0u8; AEAD_KEY_LENGTH];
             for i in 0..AEAD_KEY_LENGTH { arr[i] = content[i]; }
-            Ok(MetaKey { data: arr })
+            Ok(MetaKey {
+                data: arr,
+                nname: nodename.to_owned()
+            })
         }
     }
 
