@@ -126,6 +126,7 @@ fn do_dest(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
                 url: url,
                 user: user.map(String::from),
                 password: password.map(String::from),
+                key_file: None,
                 options: config::TargetOptions {
                     reliable: true,
                     upload_cost: 1,
@@ -150,6 +151,7 @@ fn do_dest(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
             let name = m.value_of("name").unwrap();
             let tgt = connect_backend(name.to_owned(), &opts)
                 .unwrap_or_fail("Cannot connect to remote backend");
+            println!("Connection successful");
         },
         (_, _) => panic!("No subcommand handler found")
     }

@@ -112,6 +112,7 @@ pub trait RemoteBackend<O> : Backend where Self: Sized {
     fn create(opts: O) -> Result<Self, BackendError>;
 }
 
+/// Resolve a URL's host and port to find a socket address
 fn url_addr(u: &Url) -> Result<SocketAddr, BackendError> {
     let host = u.host_str()
         .ok_or(BackendError::InvalidURL("port number is required"))?;
@@ -122,6 +123,7 @@ fn url_addr(u: &Url) -> Result<SocketAddr, BackendError> {
         .and_then(|mut iter| iter.nth(0).ok_or(BackendError::ConnectionFailed))
 }
 
+/// Connect to a given backup target
 pub fn connect_tgt(tgt: &config::BackupTarget, nodename: &str)
         -> BackendResult<Box<Backend>> {
     match tgt.url.scheme() {
@@ -137,6 +139,7 @@ pub fn connect_tgt(tgt: &config::BackupTarget, nodename: &str)
             let opts = ssh::ConnectOptions {
                 addr: url_addr(&tgt.url)?,
                 user: user.to_owned(),
+                key: tgt.key_file.clone(),
                 key_pass: tgt.password.clone(),
                 root: &path,
                 nodename: nodename.to_owned() };
@@ -147,6 +150,7 @@ pub fn connect_tgt(tgt: &config::BackupTarget, nodename: &str)
     }
 }
 
+/// Connect to a given group of backup targets
 pub fn connect_group(tgts: Vec<&config::BackupTarget>)
         -> BackendResult<Box<Backend>> {
     unimplemented!()

@@ -25,6 +25,7 @@ pub struct BackupTarget {
     pub url: Url,
     pub user: Option<String>,
     pub password: Option<String>,
+    pub key_file: Option<PathBuf>,
     pub options: TargetOptions
 }
 
@@ -63,6 +64,7 @@ pub enum TargetEntry {
     ObjUrl(Url),
     User(String),
     Password(String),
+    KeyFile(PathBuf),
     Reliable(bool),
     UploadCost(i32),
     DownloadCost(i32),
@@ -87,12 +89,13 @@ impl_rdp! {
         url = { ["url"] ~ eq ~ string ~ nl}
         user = { ["user"] ~ eq ~ string ~ nl}
         password = { ["password"] ~ eq ~ string ~ nl}
+        key_file = { ["key-file"] ~ eq ~ string ~ nl}
         reliable = { ["reliable"] ~ eq ~ boolean ~ nl}
         upload_cost = { ["upload-cost"] ~ eq ~ integer ~ nl}
         download_cost = { ["download-cost"] ~ eq ~ integer ~ nl}
         option = _{ reliable | upload_cost | download_cost}
         target = { ["target"] ~ par_tgt_name ~ open ~
-                (url | user | password | option)+ ~
+                (url | user | password | key_file | option)+ ~
             close}
         target_group = {
             ["target-group"] ~ ["("] ~ target_name ~ [")"] ~ open ~
@@ -115,6 +118,8 @@ impl_rdp! {
                 Ok(TargetEntry::ObjUrl(Url::parse(&s).unwrap())),
             (_: user, s: _string()) => Ok(TargetEntry::User(s)),
             (_: password, s: _string()) => Ok(TargetEntry::Password(s)),
+            (_: key_file, s: _string()) =>
+                Ok(TargetEntry::KeyFile(PathBuf::from(s))),
             (_: reliable, b: _bool()) => Ok(TargetEntry::Reliable(b)),
             (_: upload_cost, n: _integer()) => {
                 Ok(TargetEntry::UploadCost(n)) },
@@ -143,6 +148,7 @@ impl_rdp! {
                 let mut url = None;
                 let mut user = None;
                 let mut password = None;
+                let mut key_file = None;
                 let mut reliable = None;
                 let mut upload = None;
                 let mut download = None;
@@ -161,12 +167,16 @@ impl_rdp! {
                             else { user = Some(u) } }
                         TargetEntry::Password(p) => {
                             if password.is_some() {
-                                return Err(String::from("Duplicate password found")); }
-                            else { password = Some(p) } }
+                                return Err(String::from("Duplicate password found"));
+                            } else { password = Some(p) } }
+                        TargetEntry::KeyFile(p) => {
+                            if key_file.is_some() {
+                                return Err(String::from("Duplicate keyfile found"));
+                            } else { key_file = Some(p) } }
                         TargetEntry::Reliable(x) => {
                             if reliable.is_some() {
-                                return Err(String::from("Duplicate reliable found")); }
-                            else { reliable = Some(x) } }
+                                return Err(String::from("Duplicate reliable found"));
+                            } else { reliable = Some(x) } }
                         TargetEntry::UploadCost(x) => {
                             if upload.is_some() {
                                 return Err(String::from("Duplicate upload-cost found")); }
@@ -185,6 +195,7 @@ impl_rdp! {
                     name: String::from(n),
                     url: url.unwrap(),
                     user: user, password: password,
+                    key_file: key_file,
                     options: TargetOptions {
                         reliable: reliable.unwrap_or(false),
                         upload_cost: upload.unwrap_or(1) as i32,

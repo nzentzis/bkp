@@ -3,6 +3,7 @@ extern crate tokio_core;
 extern crate futures;
 extern crate owning_ref;
 
+use std::ffi;
 use std::env;
 use std::io;
 use std::ops::Drop;
@@ -28,6 +29,7 @@ const TAG_LENGTH: usize = 32;
 pub struct ConnectOptions<'a> {
     pub addr: SocketAddr,
     pub user: String,
+    pub key: Option<PathBuf>,
     pub key_pass: Option<String>,
     pub root: &'a Path,
     pub nodename: String
@@ -154,8 +156,8 @@ impl BlockStore for Backend {
     }
 }
 
-fn authenticate(sess: &mut Session, user: &str, pass: Option<&String>)
-        -> Result<(), BackendError> {
+fn authenticate(sess: &mut Session, user: &str, pass: Option<&String>,
+                keyfile: &Option<PathBuf>) -> Result<(), BackendError> {
     if let Ok(_) = sess.userauth_agent(&user) {
         return Ok(());
     }
@@ -163,12 +165,18 @@ fn authenticate(sess: &mut Session, user: &str, pass: Option<&String>)
     // resort to looking through ~/.ssh
     let dot_ssh = env::home_dir().unwrap().join(".ssh");
 
-    let id_rsa = dot_ssh.join("id_rsa");
-    let id_rsa_pub = dot_ssh.join("id_rsa.pub");
-    if id_rsa.exists() {
+    let keyfile = keyfile.to_owned().unwrap_or(dot_ssh.join("id_rsa"));
+    let pubkey_name = keyfile.file_name()
+        .ok_or(BackendError::BackendError(String::from("no public key found")))
+        .map(|x| {
+            let mut v = x.to_os_string();
+            v.push(".pub");
+            v })?;
+    let pubkey = keyfile.with_file_name(pubkey_name);
+    if keyfile.exists() {
         Ok(sess.userauth_pubkey_file(&user,
-                                     Some(&id_rsa_pub),
-                                     &id_rsa,
+                                     Some(&pubkey),
+                                     &keyfile,
                                      pass.map(|x| x.as_str()))?)
     } else {
         Err(BackendError::ConnectionFailed)
@@ -184,7 +192,9 @@ impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
         sess.set_compress(true);
         sess.handshake(&conn)?;
 
-        authenticate(&mut sess, &opts.user, opts.key_pass.as_ref())?;
+        authenticate(&mut sess, &opts.user,
+                     opts.key_pass.as_ref(),
+                     &opts.key)?;
         if !sess.authenticated() {
             return Err(BackendError::ConnectionFailed);
         }
