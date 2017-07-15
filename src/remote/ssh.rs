@@ -27,11 +27,23 @@ const PERM_0755: i32 = 0x1ed;
 const TAG_LENGTH: usize = 32;
 
 pub struct ConnectOptions<'a> {
+    /// The socket address of the remote server
     pub addr: SocketAddr,
+
+    /// Which user to log in as
     pub user: String,
+
+    /// An optional path to an SSH key to use. If agent auth fails, key auth
+    /// will be tried anyway using ~/.ssh/id_rsa
     pub key: Option<PathBuf>,
+
+    /// The SSH key's password, if any
     pub key_pass: Option<String>,
+
+    /// The remote directory to use as a storage root
     pub root: &'a Path,
+
+    /// The local nodename. Used for creating remote head pointers
     pub nodename: String
 }
 
@@ -70,6 +82,7 @@ impl Backend {
             sess.stat(&self.root.join("blocks")).is_err() {
             sess.mkdir(&self.root.join("metadata"), PERM_0755)?;
             sess.mkdir(&self.root.join("blocks"), PERM_0755)?;
+            sess.mkdir(&self.root.join("heads"), PERM_0755)?;
         }
         Ok(())
     }

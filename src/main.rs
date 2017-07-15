@@ -148,10 +148,23 @@ fn do_dest(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
             unimplemented!()
         },
         ("test", Some(m)) => { // test destination connectivity
-            let name = m.value_of("name").unwrap();
-            let tgt = connect_backend(name.to_owned(), &opts)
-                .unwrap_or_fail("Cannot connect to remote backend");
-            println!("Connection successful");
+            let mut has_errs = false;
+            let max_col = m.values_of("name").unwrap()
+                    .map(|ref x| x.len()).max().unwrap_or(0);
+            for name in m.values_of("name").unwrap() {
+                let tgt = connect_backend(name.to_owned(), &opts);
+                match tgt {
+                    Ok(_)  => println!("{1:0$}:   successful", max_col, name),
+                    Err(e) => {
+                        println!("{1:0$}:   {2}", max_col, name, e);
+                        has_errs = true;
+                    }
+                }
+            }
+
+            if has_errs {
+                std::process::exit(1);
+            }
         },
         (_, _) => panic!("No subcommand handler found")
     }
@@ -254,7 +267,7 @@ fn main() {
           (@arg scrub: -S --scrub "Remove existing backups from the target"))
          (@subcommand test =>
           (about: "Test connectivity to a destination")
-          (@arg name: +required "The destination to test")))
+          (@arg name: +required * "The destination to test")))
         (@subcommand test =>
          (about: "Test integrity of existing backups")
          (@arg profile: +takes_value
