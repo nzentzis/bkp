@@ -18,6 +18,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use self::futures::Future;
 use self::url::Url;
 
+use keys;
 use config;
 use metadata::{IdentityTag, MetaObject};
 
@@ -59,13 +60,13 @@ impl fmt::Display for BackendError {
 impl error::Error for BackendError {
     fn description(&self) -> &str {
         match self {
-            &BackendError::ConnectionFailed => "connection failed",
-            &BackendError::InvalidOption    => "invalid option",
-            &BackendError::ResourceError    => "insufficient resources",
-            &BackendError::CommsError       => "communications error",
-            &BackendError::NoSuchScheme     => "invalid backend URL scheme",
-            &BackendError::InvalidURL(ref s)=> "invalid backend URL",
-            &BackendError::IOError(ref e)   => "I/O error",
+            &BackendError::ConnectionFailed   => "connection failed",
+            &BackendError::InvalidOption      => "invalid option",
+            &BackendError::ResourceError      => "insufficient resources",
+            &BackendError::CommsError         => "communications error",
+            &BackendError::NoSuchScheme       => "invalid backend URL scheme",
+            &BackendError::InvalidURL(ref s)  => "invalid backend URL",
+            &BackendError::IOError(ref e)     => "I/O error",
             &BackendError::BackendError(ref s)=> "backend error",
         }
     }
@@ -124,8 +125,9 @@ fn url_addr(u: &Url) -> Result<SocketAddr, BackendError> {
 }
 
 /// Connect to a given backup target
-pub fn connect_tgt(tgt: &config::BackupTarget, nodename: &str)
-        -> BackendResult<Box<Backend>> {
+pub fn connect_tgt(tgt: &config::BackupTarget,
+                   nodename: &str,
+                   ks: &keys::Keystore) -> BackendResult<Box<Backend>> {
     match tgt.url.scheme() {
         "ssh" => {
             let user = tgt.user.clone().unwrap_or(tgt.url.username().to_owned());
@@ -142,7 +144,9 @@ pub fn connect_tgt(tgt: &config::BackupTarget, nodename: &str)
                 key: tgt.key_file.clone(),
                 key_pass: tgt.password.clone(),
                 root: &path,
-                nodename: nodename.to_owned() };
+                nodename: nodename.to_owned(),
+                keystore: ks.clone()
+            };
             let backend = ssh::Backend::create(opts)?;
             Ok(Box::new(backend))
         },
@@ -151,7 +155,8 @@ pub fn connect_tgt(tgt: &config::BackupTarget, nodename: &str)
 }
 
 /// Connect to a given group of backup targets
-pub fn connect_group(tgts: Vec<&config::BackupTarget>)
-        -> BackendResult<Box<Backend>> {
+pub fn connect_group(tgts: Vec<&config::BackupTarget>,
+                     nodename: &str,
+                     ks: &keys::Keystore) -> BackendResult<Box<Backend>> {
     unimplemented!()
 }

@@ -2,6 +2,8 @@ extern crate ssh2;
 extern crate tokio_core;
 extern crate futures;
 extern crate owning_ref;
+extern crate ring;
+extern crate rpassword;
 
 use std::ffi;
 use std::env;
@@ -19,9 +21,12 @@ use self::futures::future;
 use self::futures::future::Future;
 use self::futures::sync::oneshot;
 use self::owning_ref::OwningHandle;
+use self::rpassword::prompt_password_stderr;
+use self::ring::rand::{SecureRandom,SystemRandom};
 
 use metadata::{IdentityTag, MetaObject};
 use remote::*;
+use keys::{MetaKey, DataKey, Keystore};
 
 const PERM_0755: i32 = 0x1ed;
 const TAG_LENGTH: usize = 32;
@@ -44,7 +49,10 @@ pub struct ConnectOptions<'a> {
     pub root: &'a Path,
 
     /// The local nodename. Used for creating remote head pointers
-    pub nodename: String
+    pub nodename: String,
+
+    /// The keystore to use for data encryption/decryption
+    pub keystore: keys::Keystore
 }
 
 pub struct Backend {
@@ -54,8 +62,14 @@ pub struct Backend {
     /// The root path on the remote host
     root: PathBuf,
 
+    /// The remote hostname
+    host: String,
+
     /// The node name to use on the remote host
-    node: String
+    node: String,
+
+    /// The keystore to use for data encryption/decryption
+    keystore: keys::Keystore
 }
 
 impl From<io::Error> for BackendError {
@@ -83,6 +97,10 @@ impl Backend {
             sess.mkdir(&self.root.join("metadata"), PERM_0755)?;
             sess.mkdir(&self.root.join("blocks"), PERM_0755)?;
             sess.mkdir(&self.root.join("heads"), PERM_0755)?;
+
+            // generate data and metadata keys for the remote
+            let meta_key = self.keystore.new_meta_key(&self.host);
+            let data_key = self.keystore.new_data_key(&self.host);
         }
         Ok(())
     }
@@ -224,7 +242,9 @@ impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
             sess: Mutex::new(sess_box),
             sock: conn,
             root: opts.root.to_owned(),
-            node: opts.nodename
+            node: opts.nodename,
+            host: format!("{}", opts.addr),
+            keystore: opts.keystore
         };
 
         // make sure the target directory exists

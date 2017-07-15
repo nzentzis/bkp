@@ -16,9 +16,11 @@ url = "1.5"
 rpassword = "0.4.0"
 untrusted = "0.5"
 byteorder = "1.0.0"
-owning_ref = "0.3"
-hostname = "0.1"
 
+hostname = "0.1"
+interfaces = "0.0.2"
+
+owning_ref = "0.3"
 ssh2 = "0.3.1"
 
 [dependencies.ring]

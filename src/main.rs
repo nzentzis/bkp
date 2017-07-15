@@ -62,43 +62,19 @@ fn connect_backend(name: String, opts: &GlobalOptions)
         -> Result<Box<remote::Backend>, remote::BackendError> {
     use remote::BackendError;
     if let Some(t) = opts.cfg.find_target(&name) {
-        remote::connect_tgt(t, &opts.cfg.node_name)
+        remote::connect_tgt(t, &opts.cfg.node_name, &opts.keystore)
     } else if let Some(g) = opts.cfg.find_group(&name) {
+        // bind names to actual targets
         let tgts = g.members.iter()
             .map(|ref n| opts.cfg.find_target(&n)
                                  .ok_or(BackendError::InvalidOption))
+
             .collect::<Result<Vec<&config::BackupTarget>, BackendError>>()?;
-        remote::connect_group(tgts)
+
+        // connect all of them
+        remote::connect_group(tgts, &opts.cfg.node_name, &opts.keystore)
     } else {
         Err(BackendError::InvalidOption)
-    }
-}
-
-fn do_keys(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
-    match args.subcommand() {
-        ("", _) => { // list keys
-            let keys = opts.keystore.list_keys()
-                .unwrap_or_fail("Cannot list stored keys");
-            for e in keys {
-                println!("{} {}", e.1.describe(), e.0);
-            }
-        }
-        ("new", Some(m)) => { // create a new key
-            let name = m.value_of("name").unwrap();
-            let t = match m.value_of("keytype").unwrap() {
-                "asymm" => keys::KeyType::Asymm,
-                "symm" => keys::KeyType::Symm,
-                _ => panic!("Impossible option found") };
-            opts.keystore.new_key(name, t)
-                .unwrap_or_fail("Failed to create key");
-        }
-        ("import", Some(m)) => { // import keys
-        }
-        ("export", Some(m)) => { // export keys
-        }
-        ("sync", Some(m)) => { // sync keystore with remote
-        }
-        (_, _) => panic!("No subcommand handler found!")
     }
 }
 
@@ -227,25 +203,6 @@ fn main() {
          "Override the default destination")
         (@arg VERBOSE: -v --verbose "Enable verbose terminal output")
         (@arg QUIET: -q --quiet "Silence non-error terminal output")
-        (@subcommand keys =>
-         (about: "Manipulate local or remote keystores")
-         (@subcommand new =>
-          (about: "Create a new key")
-          (@arg name: +required +takes_value "Name to assign to the new key")
-          (@arg keytype: -t --type +takes_value
-           possible_values(&["symm", "asymm"]) default_value("symm")
-           "The key type to create"))
-         (@subcommand import =>
-          (about: "Import keystore from an encrypted backup file")
-          (@arg file: +required "Keystore file to import")
-          (@arg overwrite: -o --overwrite "Allow overwriting local keystore"))
-         (@subcommand export =>
-          (about: "Export keystore to an encrypted backup file")
-          (@arg file: +required "Filename of new backup file"))
-         (@subcommand sync =>
-          (about: "Sync local and remote copies of keystore")
-          (@arg down_only: -d --down "Only sync from remote to local")
-          (@arg up_only: -u --up "Only sync from local to remote")))
         (@subcommand dest =>
          (about: "Query and modify available backup destinations")
          (@subcommand add =>
@@ -386,7 +343,6 @@ fn main() {
     match opt_matches.subcommand() {
         ("", _) => { println!("bkp: No subcommand specified"); },
         ("dest", Some(m)) => do_dest(m, &mut global_flags),
-        ("keys", Some(m)) => do_keys(m, &mut global_flags),
         ("test", Some(m)) => do_test(m, &global_flags),
         ("stat", Some(m)) => do_stat(m, &global_flags),
         ("clean", Some(m)) => do_clean(m, &global_flags),
