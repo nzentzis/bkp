@@ -5,6 +5,7 @@ mod config;
 mod keys;
 mod metadata;
 mod remote;
+mod util;
 
 extern crate ring;
 extern crate untrusted;

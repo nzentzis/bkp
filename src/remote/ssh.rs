@@ -17,6 +17,8 @@ use std::sync::Mutex;
 use std::iter::FromIterator;
 use std::cell::Cell;
 
+use std::io::{Cursor,Read,Write};
+
 use self::ssh2::{Session, Sftp};
 use self::futures::future;
 use self::futures::future::Future;
@@ -25,9 +27,10 @@ use self::owning_ref::OwningHandle;
 use self::rpassword::prompt_password_stderr;
 use self::ring::rand::{SecureRandom,SystemRandom};
 
-use metadata::{IdentityTag, MetaObject};
+use metadata::{IdentityTag, MetaObject, tag_from_digest};
 use remote::*;
 use keys::{MetaKey, DataKey, Keystore};
+use util::ToHex;
 
 const PERM_0755: i32 = 0x1ed;
 const TAG_LENGTH: usize = 32;
@@ -115,9 +118,9 @@ impl Backend {
 
         // make sure we have the remote's data key locally
         let dkey = match self.keystore.get_data_key(&self.host) {
-            println!("retriving remote data key");
             Ok(k) => k,
             Err(_) => {
+                println!("retriving remote data key");
                 // sync it
                 let mut f = sess.open(&self.root.join("datakey"))?;
                 self.keystore.store_data_key(&self.host, &mut f)?
@@ -223,21 +226,101 @@ impl MetadataStore for Backend {
     }
 
     fn read_meta(&mut self, ident: &IdentityTag) -> BackendResult<MetaObject> {
-        unimplemented!()
+        // generate the prefix and filename
+        let prefix = format!("{:02x}", ident[0]);
+        let name = ident.as_ref().to_hex();
+        
+        // read the metadata file
+        let sess = self.sess.lock().unwrap();
+        let mut path = self.root.join("metadata");
+        path.push(prefix);
+        path.push(name);
+        let data = {
+            let mut f = sess.open(&path)?;
+            let mut data = Vec::new();
+            f.read_to_end(&mut data)?;
+            self.meta_key().decrypt(data)?
+        };
+
+        // read the meta object
+        Ok(MetaObject::load(&mut Cursor::new(data))?)
     }
 
     fn write_meta(&mut self, obj: &MetaObject) -> BackendResult<IdentityTag> {
-        unimplemented!()
+        // encode the object and encrypt it
+        let (tag, encoded) = {
+            let mut v = Vec::new();
+            let tag = obj.save(&mut v)?;
+            (tag, self.meta_key().encrypt(v)?)
+        };
+
+        // generate the prefix and filename
+        let prefix = format!("{:02x}", tag[0]);
+        let name = tag.as_ref().to_hex();
+
+        // open the file and write the object
+        let sess = self.sess.lock().unwrap();
+        let mut path = self.root.join("metadata");
+        path.push(prefix);
+
+        // make sure the dir exists
+        if sess.stat(&path).is_err() { sess.mkdir(&path, PERM_0755); }
+
+        // short-circuit if it's already stored
+        path.push(name);
+        if sess.stat(&path).is_ok() { return Ok(tag); }
+
+        // actually write it
+        let mut f = sess.create(&path)?;
+        f.write_all(&encoded)?;
+        Ok(tag)
     }
 }
 
 impl BlockStore for Backend {
     fn read_block(&mut self, ident: &IdentityTag) -> BackendResult<Vec<u8>> {
-        unimplemented!()
+        // generate the prefix and filename
+        let prefix = format!("{:02x}", ident[0]);
+        let name = ident.as_ref().to_hex();
+        
+        // read the metadata file
+        let sess = self.sess.lock().unwrap();
+        let mut path = self.root.join("blocks");
+        path.push(prefix);
+        path.push(name);
+        let mut f = sess.open(&path)?;
+        let mut data = Vec::new();
+        f.read_to_end(&mut data)?;
+        Ok(self.data_key().decrypt(data)?)
     }
 
     fn write_block(&mut self, data: &[u8]) -> BackendResult<IdentityTag> {
-        unimplemented!()
+        // hash the data
+        let tag = tag_from_digest(ring::digest::digest(&ring::digest::SHA256,
+                                                       data));
+
+        // generate the prefix and filename
+        let prefix = format!("{:02x}", tag[0]);
+        let name = tag.as_ref().to_hex();
+
+        // encrypt the data and write it to a file
+        let encrypted = self.data_key().encrypt(data.iter().cloned().collect())?;
+
+        let sess = self.sess.lock().unwrap();
+        let mut path = self.root.join("blocks");
+        path.push(prefix);
+
+        // make sure the dir exists
+        if sess.stat(&path).is_err() { sess.mkdir(&path, PERM_0755); }
+
+        // short-circuit if it's already stored
+        path.push(name);
+        if sess.stat(&path).is_ok() { return Ok(tag); }
+
+        // actually write it
+        let mut f = sess.open(&path)?;
+        f.write_all(&encrypted)?;
+        Ok(tag)
     }
 }
 

@@ -5,8 +5,22 @@ use std::time;
 use std::io;
 use std::io::{Read, Write};
 use metadata::byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
+use util::Hasher;
 
 pub type IdentityTag = [u8; ring::digest::SHA256_OUTPUT_LEN];
+
+/// Convert the given digest into an identity tag.
+/// 
+/// Panics if the digest isn't the right size.
+pub fn tag_from_digest(d: ring::digest::Digest) -> IdentityTag {
+    if d.algorithm().output_len != ring::digest::SHA256_OUTPUT_LEN {
+        panic!("Cannot generate identity from incorrect-length digest");
+    }
+    let hash = d.as_ref();
+    let mut r = [0u8; ring::digest::SHA256_OUTPUT_LEN];
+    for i in 0..ring::digest::SHA256_OUTPUT_LEN { r[i] = hash[i]; }
+    r
+}
 
 pub struct FSMetadata {
     /// Modification time
@@ -101,9 +115,6 @@ pub enum MetaObjectContents {
 }
 
 pub struct MetaObject {
-    /// the object's unique identity, defined as the SHA256 hash of its content
-    pub id: IdentityTag,
-
     /// The object's creation time. Note that this applies to the *object*, not
     /// any files or trees that it contains.
     pub create_time: time::SystemTime,
@@ -120,8 +131,7 @@ impl MetaObject {
     }
 
     /// Read a serialized meta object from the passed stream
-    pub fn load<R: Read>(tag: &IdentityTag, mut f: &mut R)
-            -> io::Result<MetaObject> {
+    pub fn load<R: Read>(mut f: &mut R) -> io::Result<MetaObject> {
         // read required prefix bytes
         let created_time = time::UNIX_EPOCH +
             time::Duration::from_secs(f.read_u64::<LittleEndian>()?);
@@ -186,13 +196,15 @@ impl MetaObject {
         };
 
         Ok(MetaObject {
-            id: tag.clone(),
             create_time: created_time,
             content: content
         })
     }
 
-    pub fn save<W: Write>(&self, mut f: &mut W) -> io::Result<()> {
+    /// Save the metaobject to the given writer, and return the resulting ID
+    /// tag.
+    pub fn save<W: Write>(&self, mut f: &mut W) -> io::Result<IdentityTag> {
+        let mut f = Hasher::sha256(f);
         match self.create_time.duration_since(time::UNIX_EPOCH) {
             Err(e) => f.write_u64::<LittleEndian>(0)?, // clamp to the epoch
             Ok(x)  => f.write_u64::<LittleEndian>(x.as_secs())?
@@ -239,6 +251,7 @@ impl MetaObject {
             },
         }
 
-        Ok(())
+        let id = tag_from_digest(f.finish());
+        Ok(id)
     }
 }
