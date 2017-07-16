@@ -27,6 +27,7 @@ use self::owning_ref::OwningHandle;
 use self::rpassword::prompt_password_stderr;
 use self::ring::rand::{SecureRandom,SystemRandom};
 
+use metadata;
 use metadata::{IdentityTag, MetaObject, tag_from_digest};
 use remote::*;
 use keys::{MetaKey, DataKey, Keystore};
@@ -274,6 +275,41 @@ impl MetadataStore for Backend {
         let mut f = sess.create(&path)?;
         f.write_all(&encoded)?;
         Ok(tag)
+    }
+
+    fn get_head(&mut self) -> BackendResult<Option<MetaObject>> {
+        // generate a head path
+        let mut path = self.root.join("heads");
+        path.push(self.node.to_owned());
+
+        // open and read it
+        let mut ident = [0u8; metadata::IDENTITY_LEN];
+        {
+            let sess = self.sess.lock().unwrap();
+            let mut f = sess.open(&path);
+            match f {
+                Ok(mut f) => f.read_exact(&mut ident)?,
+                Err(_)    => return Ok(None)
+            }
+        }
+
+        // get the object
+        self.read_meta(&ident).map(Some)
+    }
+
+    fn set_head(&mut self, tag: &IdentityTag) -> BackendResult<()> {
+        // generate a head path
+        let mut path = self.root.join("heads");
+        path.push(self.node.to_owned());
+
+        // write it out
+        {
+            let sess = self.sess.lock().unwrap();
+            let mut f = sess.create(&path)?;
+            f.write_all(tag)?;
+        }
+
+        Ok(())
     }
 }
 

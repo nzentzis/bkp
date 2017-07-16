@@ -7,18 +7,19 @@ use std::io::{Read, Write};
 use metadata::byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
 use util::Hasher;
 
-pub type IdentityTag = [u8; ring::digest::SHA256_OUTPUT_LEN];
+pub const IDENTITY_LEN: usize = ring::digest::SHA256_OUTPUT_LEN;
+pub type IdentityTag = [u8; IDENTITY_LEN];
 
 /// Convert the given digest into an identity tag.
 /// 
 /// Panics if the digest isn't the right size.
 pub fn tag_from_digest(d: ring::digest::Digest) -> IdentityTag {
-    if d.algorithm().output_len != ring::digest::SHA256_OUTPUT_LEN {
+    if d.algorithm().output_len != IDENTITY_LEN {
         panic!("Cannot generate identity from incorrect-length digest");
     }
     let hash = d.as_ref();
-    let mut r = [0u8; ring::digest::SHA256_OUTPUT_LEN];
-    for i in 0..ring::digest::SHA256_OUTPUT_LEN { r[i] = hash[i]; }
+    let mut r = [0u8; IDENTITY_LEN];
+    for i in 0..IDENTITY_LEN { r[i] = hash[i]; }
     r
 }
 
@@ -125,7 +126,7 @@ pub struct MetaObject {
 
 impl MetaObject {
     fn load_id<R: Read>(f: &mut R) -> io::Result<IdentityTag> {
-        let mut buf = [0u8; ring::digest::SHA256_OUTPUT_LEN];
+        let mut buf = [0u8; IDENTITY_LEN];
         f.read_exact(&mut buf)?;
         Ok(buf)
     }

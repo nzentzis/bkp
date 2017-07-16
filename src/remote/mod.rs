@@ -95,6 +95,12 @@ pub trait MetadataStore {
 
     /// Try to read a metadata object by ID
     fn write_meta(&mut self, obj: &MetaObject) -> BackendResult<IdentityTag>;
+
+    /// Read the current head, if one exists
+    fn get_head(&mut self) -> BackendResult<Option<MetaObject>>;
+
+    /// Set the current head to a given tag
+    fn set_head(&mut self, tag: &IdentityTag) -> BackendResult<()>;
 }
 
 /// Trait for everything that stores data blocks
