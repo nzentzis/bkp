@@ -92,6 +92,8 @@ impl Backend {
         let mkeys_root = self.root.join("metakeys");
         if sess.stat(&meta_root).is_err() ||
                 sess.stat(&self.root.join("blocks")).is_err() {
+            println!("initializing SFTP target at {} under {:?}",
+                     self.host, self.root);
             sess.mkdir(&meta_root, PERM_0755)?;
             sess.mkdir(&mkeys_root, PERM_0755)?;
             sess.mkdir(&self.root.join("blocks"), PERM_0755)?;
@@ -105,7 +107,7 @@ impl Backend {
             }
         }
 
-        // make sure we have a meta key there
+        // make sure we have the appropriate meta key there
         let our_meta = mkeys_root.join(&self.node);
         if sess.stat(&our_meta).is_err() {
             let meta_key = self.keystore.new_meta_key(&self.node)?;
@@ -114,6 +116,7 @@ impl Backend {
                 meta_key.write(&self.keystore, &mut mkey);
             }
         }
+
         Ok(())
     }
 
