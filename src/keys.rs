@@ -1,21 +1,27 @@
 extern crate ring;
 extern crate rpassword;
 extern crate interfaces;
+extern crate byteorder;
 
 use untrusted;
+use self::byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
+use std::io::{Read,Write};
+
 use self::rpassword::prompt_password_stderr;
 use self::ring::rand::{SecureRandom,SystemRandom};
 use std::path::{Path,PathBuf};
-use std::io::{Read,Write};
 use std::io;
 use std::fs;
 use std::error;
 use std::fmt;
+use std::cell;
 
 const SALT_LENGTH: usize = 256;
 const PBKDF2_ITERATIONS: u32 = 100000;
 const AEAD_KEY_LENGTH: usize = 32; // 256 bits
 static DIGEST_ALG: &'static ring::digest::Algorithm = &ring::digest::SHA256;
+
+const KEY_FMT_VERSION: u16 = 1;
 
 #[derive(Debug)]
 pub enum Error {
@@ -23,6 +29,7 @@ pub enum Error {
     InvalidKeystore,
     CryptoError,
     NotFound,
+    WrongFormat,
     IOError(io::Error),
     Unsupported
 }
@@ -34,6 +41,7 @@ impl fmt::Display for Error {
             &Error::InvalidKeystore  => write!(f, "Invalid keystore"),
             &Error::CryptoError      => write!(f, "Cryptographic error"),
             &Error::NotFound         => write!(f, "Not found"),
+            &Error::WrongFormat      => write!(f, "Wrong format"),
             &Error::IOError(ref e)   => {
                 write!(f, "I/O Error: ");
                 e.fmt(f)
@@ -50,6 +58,7 @@ impl error::Error for Error {
             &Error::InvalidKeystore  => "Invalid keystore",
             &Error::CryptoError      => "Cryptographic error",
             &Error::NotFound         => "Not found",
+            &Error::WrongFormat      => "Wrong format",
             &Error::IOError(ref e)   => "I/O error",
             &Error::Unsupported      => "Unsupported operation",
         }
@@ -123,16 +132,21 @@ fn decrypt_inplace(key: &[u8; AEAD_KEY_LENGTH],
 //
 // This algorithm explicitly *does not* require that the nonces are secret, so
 // they are prepended to the message after encryption.
-
-/// Encrypt the data block in place
-fn encrypt_inplace(key: &[u8; AEAD_KEY_LENGTH],
-                   name: &str,
-                   mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+fn gen_nonce() -> Result<[u8; 12], Error> {
     // generate nonce
     let mac: [u8; 6] = find_mac_addr()?;
     let mut nonce: [u8; 12] = [0u8; 12];
     SystemRandom::new().fill(&mut nonce);
     for i in 0..6 { nonce[i] = mac[i]; }
+
+    Ok(nonce)
+}
+
+/// Encrypt the data block in place
+fn encrypt_inplace(key: &[u8; AEAD_KEY_LENGTH],
+                   name: &str,
+                   mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+    let nonce = gen_nonce()?;
 
     // insert the nonce at the beginning of the output
     let tag_len = ring::aead::CHACHA20_POLY1305.tag_len();
@@ -175,6 +189,65 @@ impl MetaKey {
     pub fn encrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
         encrypt_inplace(&self.data, &self.nname, data)
     }
+
+    /// Write the data key in secure format to a given target stream
+    pub fn write<W: WriteBytesExt>(&self,
+                                   ks: &Keystore,
+                                   s: &mut W) -> Result<(), Error> {
+        s.write_u16::<BigEndian>(KEY_FMT_VERSION)?;
+
+        // encode the key to a vector before encrypting
+        let mut vkey = Vec::new();
+        vkey.write_u16::<BigEndian>(self.nname.as_bytes().len() as u16)?;
+        vkey.write_all(self.nname.as_bytes())?;
+        vkey.write_all(&self.data)?;
+
+        // encrypt the key and write the nonce into the file
+        let nonce = gen_nonce()?;
+        s.write_all(&nonce);
+        let enc = ks.encrypt_master(vkey, &nonce)?;
+        s.write_all(&enc)?;
+
+        Ok(())
+    }
+
+    /// Read a securely-encoded key from a target stream and verify it
+    pub fn read<R: ReadBytesExt>(&self,
+                                 ks: &Keystore,
+                                 s: &mut R) -> Result<MetaKey, Error> {
+        let vsn = s.read_u16::<BigEndian>()?;
+        if vsn > KEY_FMT_VERSION {
+            return Err(Error::WrongFormat);
+        }
+
+        // read the nonce
+        let mut nonce = [0u8; 12];
+        s.read_exact(&mut nonce);
+
+        // read the rest of the decrypted data
+        let mut crypted = Vec::new();
+        s.read_to_end(&mut crypted);
+
+        // decrypt it
+        let mut data = io::Cursor::new(ks.decrypt_master(crypted, &nonce)?);
+
+        // read the nname and data
+        let nname = {
+            let l = data.read_u16::<BigEndian>()?;
+            let mut buf = Vec::new();
+            buf.resize(l as usize, 0);
+            data.read_exact(&mut buf);
+            String::from_utf8(buf).map_err(|_| {Error::InvalidKeystore})?
+        };
+
+        let mut key = [0u8; AEAD_KEY_LENGTH];
+        data.read_exact(&mut key)?;
+
+        Ok(MetaKey {
+            nname: nname,
+            data: key
+        })
+    }
 }
 
 impl DataKey {
@@ -187,15 +260,123 @@ impl DataKey {
     pub fn encrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
         encrypt_inplace(&self.data, &self.rname, data)
     }
+
+    /// Write the data key in secure format to a given target stream
+    pub fn write<W: WriteBytesExt>(&self,
+                                   ks: &Keystore,
+                                   s: &mut W) -> Result<(), Error> {
+        s.write_u16::<BigEndian>(KEY_FMT_VERSION)?;
+
+        // encode the key to a vector before encrypting
+        let mut vkey = Vec::new();
+        vkey.write_u16::<BigEndian>(self.rname.as_bytes().len() as u16)?;
+        vkey.write_all(self.rname.as_bytes())?;
+        vkey.write_all(&self.data)?;
+
+        // encrypt the key and write the nonce into the file
+        let nonce = gen_nonce()?;
+        s.write_all(&nonce);
+        let enc = ks.encrypt_master(vkey, &nonce)?;
+        s.write_all(&enc)?;
+
+        Ok(())
+    }
+
+    /// Read a securely-encoded key from a target stream and verify it
+    pub fn read<R: ReadBytesExt>(&self,
+                                 ks: &Keystore,
+                                 s: &mut R) -> Result<DataKey, Error> {
+        let vsn = s.read_u16::<BigEndian>()?;
+        if vsn > KEY_FMT_VERSION {
+            return Err(Error::WrongFormat);
+        }
+
+        // read the nonce
+        let mut nonce = [0u8; 12];
+        s.read_exact(&mut nonce);
+
+        // read the rest of the decrypted data
+        let mut crypted = Vec::new();
+        s.read_to_end(&mut crypted);
+
+        // decrypt it
+        let mut data = io::Cursor::new(ks.decrypt_master(crypted, &nonce)?);
+
+        // read the rname and data
+        let rname = {
+            let l = data.read_u16::<BigEndian>()?;
+            let mut buf = Vec::new();
+            buf.resize(l as usize, 0);
+            data.read_exact(&mut buf);
+            String::from_utf8(buf).map_err(|_| {Error::InvalidKeystore})?
+        };
+
+        let mut key = [0u8; AEAD_KEY_LENGTH];
+        data.read_exact(&mut key)?;
+
+        Ok(DataKey {
+            rname: rname,
+            data: key
+        })
+    }
 }
+
+type MasterKey = [u8; ring::digest::SHA256_OUTPUT_LEN];
 
 #[derive(Clone)]
 pub struct Keystore {
     /// The location of the keystore's location on disk
     loc: PathBuf,
+
+    /// In-memory master key cache to avoid multiple prompting
+    mkey: cell::Cell<Option<MasterKey>>
 }
 
 impl Keystore {
+    fn get_master_key(&self) -> Result<MasterKey, Error> {
+        if let Some(r) = self.mkey.get() {
+            return Ok(r);
+        }
+
+        // prompt password
+        let passwd = prompt_password_stderr("Keystore password: ")?;
+
+        // get the salt out of the filesystem
+        let mut salt = [0u8; SALT_LENGTH];
+        {
+            let meta_path = self.loc.join("mkey_salt");
+            let mut infile = fs::OpenOptions::new()
+                .read(true)
+                .open(meta_path)?;
+            infile.read_exact(&mut salt)?;
+        }
+
+        // derive key
+        let mut buf = [0u8; ring::digest::SHA256_OUTPUT_LEN];
+        ring::pbkdf2::derive(DIGEST_ALG, PBKDF2_ITERATIONS, &salt,
+                             passwd.as_bytes(), &mut buf);
+
+        // read and verify the key hash
+        let hash = ring::digest::digest(&ring::digest::SHA256, &buf);
+        {
+            let meta_path = self.loc.join("mkey_hash");
+            let mut data = Vec::new();
+            let mut infile = fs::OpenOptions::new()
+                .read(true)
+                .open(meta_path)?;
+            infile.read_to_end(&mut data)?;
+
+            if !hash.as_ref().eq(data.as_slice()) {
+                return Err(Error::PasswordError);
+            }
+        }
+
+        // store the key
+        self.mkey.replace(Some(buf.clone()));
+
+        return Ok(buf)
+    }
+
     /// Create a new local keystore at the given path.
     /// 
     /// Prompt the user for a password to use when encrypting the given keystore
@@ -215,23 +396,33 @@ impl Keystore {
             return Err(Error::PasswordError);
         }
 
+        // derive a key from the master password
         let mut buf = [0u8; ring::digest::SHA256_OUTPUT_LEN];
         let mut salt = [0u8; SALT_LENGTH];
         SystemRandom::new().fill(&mut salt);
         ring::pbkdf2::derive(DIGEST_ALG, PBKDF2_ITERATIONS, &salt,
                              passwd.as_bytes(), &mut buf);
 
-        // write the master key into the keystore, for sync support
-        // note that this CANNOT be sent to remotes or exported
-        let meta_path = p.join("metadata");
+        // write the password salt for rederivation
         {
-            let mut outfile = fs::File::create(&meta_path)?;
-            outfile.write(&buf);
-            outfile.sync_all();
+            let meta_path = p.join("mkey_salt");
+            let mut outf = fs::File::create(&meta_path)?;
+            outf.write(&salt);
+            outf.sync_all();
+        }
+
+        // write a hash of the password for verification
+        let hash = ring::digest::digest(&ring::digest::SHA256, &buf);
+        {
+            let meta_path = p.join("mkey_hash");
+            let mut outf = fs::File::create(&meta_path)?;
+            outf.write(hash.as_ref());
+            outf.sync_all();
         }
 
         Ok(Keystore {
-            loc: p.to_path_buf()
+            loc: p.to_path_buf(),
+            mkey: cell::Cell::new(None)
         })
     }
 
@@ -240,18 +431,70 @@ impl Keystore {
     /// Since local keystores are unencrypted, this doesn't ask for a password
     pub fn open(p: &Path) -> Result<Keystore, Error> {
         let cpath = fs::canonicalize(p)?;
-        let metapath = cpath.join("metadata");
 
         // verify keystore
         let root_meta = fs::metadata(&cpath)?;
-        let meta_meta = fs::metadata(&metapath)?;
+        let mkhash_meta = fs::metadata(&cpath.join("mkey_hash"))?;
+        let mksalt_meta = fs::metadata(&cpath.join("mkey_hash"))?;
 
         if !root_meta.is_dir() { return Err(Error::InvalidKeystore); }
-        if !meta_meta.is_file() { return Err(Error::InvalidKeystore); }
+        if !mkhash_meta.is_file() { return Err(Error::InvalidKeystore); }
+        if !mksalt_meta.is_file() { return Err(Error::InvalidKeystore); }
 
         Ok(Keystore {
-            loc: p.to_path_buf()
+            loc: p.to_path_buf(),
+            mkey: cell::Cell::new(None)
         })
+    }
+
+    /// Encrypt some data with the master key. This *will* prompt the user to
+    /// enter the master password.
+    fn encrypt_master(&self,
+                      mut data: Vec<u8>,
+                      nonce: &[u8; 12]) -> Result<Vec<u8>, Error> {
+        let key = self.get_master_key()?;
+
+        // encrypt the data
+        let key = ring::aead::SealingKey::new(&ring::aead::CHACHA20_POLY1305,
+                                              &key).unwrap();
+        let empty = Vec::new();
+        let tag_len = ring::aead::CHACHA20_POLY1305.tag_len();
+        let out_len = data.len() + tag_len;
+        data.resize(out_len, 0);
+        let res = ring::aead::seal_in_place(&key, nonce.as_ref(),
+                                            &empty, // no additional data
+                                            &mut data, tag_len);
+        match res {
+            Ok(sz) => {
+                Ok(data)
+            },
+            Err(_) => Err(Error::CryptoError)
+        }
+    }
+
+    /// Decrypt some data with the master key. This *will* prompt the user to
+    /// enter the master password.
+    fn decrypt_master(&self,
+                      mut data: Vec<u8>,
+                      nonce: &[u8; 12]) -> Result<Vec<u8>, Error> {
+        let key = self.get_master_key()?;
+
+        // encrypt the data
+        let key = ring::aead::SealingKey::new(&ring::aead::CHACHA20_POLY1305,
+                                              &key).unwrap();
+        let empty = Vec::new();
+        let tag_len = ring::aead::CHACHA20_POLY1305.tag_len();
+        let out_len = data.len() + tag_len;
+        data.resize(out_len, 0);
+        let res = ring::aead::seal_in_place(&key, nonce.as_ref(),
+                                            &empty, // no additional data
+                                            &mut data, tag_len);
+        match res {
+            Ok(sz) => {
+                Ok(data)
+            },
+            Err(_) => Err(Error::CryptoError)
+        }
     }
 
     /// Create a new metadata key
