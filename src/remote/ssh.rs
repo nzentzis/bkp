@@ -15,6 +15,7 @@ use std::boxed::Box;
 use std::thread;
 use std::sync::Mutex;
 use std::iter::FromIterator;
+use std::cell::Cell;
 
 use self::ssh2::{Session, Sftp};
 use self::futures::future;
@@ -69,7 +70,11 @@ pub struct Backend {
     node: String,
 
     /// The keystore to use for data encryption/decryption
-    keystore: keys::Keystore
+    keystore: keys::Keystore,
+
+    // cached data and metadata keys
+    datakey: Cell<Option<DataKey>>,
+    metakey: Cell<Option<MetaKey>>,
 }
 
 impl From<self::ssh2::Error> for BackendError {
@@ -85,7 +90,8 @@ impl From<oneshot::Canceled> for BackendError {
 }
 
 impl Backend {
-    /// Initialize a store on the target if one doesn't exist already
+    /// Initialize a store on the target if one doesn't exist already. Return
+    /// the remote's data key.
     fn initialize(&mut self) -> Result<(), BackendError> {
         let sess = self.sess.lock().unwrap();
         let meta_root = self.root.join("metadata");
@@ -107,10 +113,21 @@ impl Backend {
             }
         }
 
+        // make sure we have the remote's data key locally
+        let dkey = match self.keystore.get_data_key(&self.host) {
+            println!("retriving remote data key");
+            Ok(k) => k,
+            Err(_) => {
+                // sync it
+                let mut f = sess.open(&self.root.join("datakey"))?;
+                self.keystore.store_data_key(&self.host, &mut f)?
+            }
+        };
+
         // make sure we have the appropriate meta key there
         let our_meta = mkeys_root.join(&self.node);
         if sess.stat(&our_meta).is_err() {
-            let meta_key = self.keystore.new_meta_key(&self.node)?;
+            let meta_key = self.keystore.get_meta_key()?;
             {
                 let mut mkey = sess.create(&our_meta)?;
                 meta_key.write(&self.keystore, &mut mkey);
@@ -118,6 +135,28 @@ impl Backend {
         }
 
         Ok(())
+    }
+
+    /// Get the local meta key
+    fn meta_key(&self) -> MetaKey {
+        match self.metakey.get() {
+            Some(r) => r,
+            None => {
+                self.metakey.replace(self.keystore.get_meta_key().ok());
+                self.metakey.get().unwrap()
+            }
+        }
+    }
+
+    /// Get the local data key
+    fn data_key(&self) -> DataKey {
+        match self.datakey.get() {
+            Some(r) => r,
+            None => {
+                self.datakey.replace(self.keystore.get_data_key(&self.host).ok());
+                self.datakey.get().unwrap()
+            }
+        }
     }
 
     /// Lock the target atomically. If we fail, return an error.
@@ -259,7 +298,9 @@ impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
             root: opts.root.to_owned(),
             node: opts.nodename,
             host: format!("{}", opts.addr),
-            keystore: opts.keystore
+            keystore: opts.keystore,
+            datakey: Cell::new(None),
+            metakey: Cell::new(None)
         };
 
         // make sure the target directory exists

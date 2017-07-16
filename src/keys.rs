@@ -169,25 +169,25 @@ fn encrypt_inplace(key: &[u8; AEAD_KEY_LENGTH],
     }
 }
 
+#[derive(Clone,Copy)]
 pub struct MetaKey {
-    data: [u8; AEAD_KEY_LENGTH],
-    nname: String
+    data: [u8; AEAD_KEY_LENGTH]
 }
 
+#[derive(Clone,Copy)]
 pub struct DataKey {
-    data: [u8; AEAD_KEY_LENGTH],
-    rname: String
+    data: [u8; AEAD_KEY_LENGTH]
 }
 
 impl MetaKey {
     /// Decrypt the data block
     pub fn decrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
-        decrypt_inplace(&self.data, &self.nname, data)
+        decrypt_inplace(&self.data, "meta", data)
     }
 
     /// Encrypt the data block
     pub fn encrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
-        encrypt_inplace(&self.data, &self.nname, data)
+        encrypt_inplace(&self.data, "meta", data)
     }
 
     /// Write the data key in secure format to a given target stream
@@ -198,8 +198,6 @@ impl MetaKey {
 
         // encode the key to a vector before encrypting
         let mut vkey = Vec::new();
-        vkey.write_u16::<BigEndian>(self.nname.as_bytes().len() as u16)?;
-        vkey.write_all(self.nname.as_bytes())?;
         vkey.write_all(&self.data)?;
 
         // encrypt the key and write the nonce into the file
@@ -212,8 +210,7 @@ impl MetaKey {
     }
 
     /// Read a securely-encoded key from a target stream and verify it
-    pub fn read<R: ReadBytesExt>(&self,
-                                 ks: &Keystore,
+    pub fn read<R: ReadBytesExt>(ks: &Keystore,
                                  s: &mut R) -> Result<MetaKey, Error> {
         let vsn = s.read_u16::<BigEndian>()?;
         if vsn > KEY_FMT_VERSION {
@@ -230,35 +227,22 @@ impl MetaKey {
 
         // decrypt it
         let mut data = io::Cursor::new(ks.decrypt_master(crypted, &nonce)?);
-
-        // read the nname and data
-        let nname = {
-            let l = data.read_u16::<BigEndian>()?;
-            let mut buf = Vec::new();
-            buf.resize(l as usize, 0);
-            data.read_exact(&mut buf);
-            String::from_utf8(buf).map_err(|_| {Error::InvalidKeystore})?
-        };
-
         let mut key = [0u8; AEAD_KEY_LENGTH];
         data.read_exact(&mut key)?;
 
-        Ok(MetaKey {
-            nname: nname,
-            data: key
-        })
+        Ok(MetaKey { data: key })
     }
 }
 
 impl DataKey {
     /// Decrypt the data block
     pub fn decrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
-        decrypt_inplace(&self.data, &self.rname, data)
+        decrypt_inplace(&self.data, "data", data)
     }
 
     /// Encrypt the data block
     pub fn encrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
-        encrypt_inplace(&self.data, &self.rname, data)
+        encrypt_inplace(&self.data, "data", data)
     }
 
     /// Write the data key in secure format to a given target stream
@@ -269,8 +253,6 @@ impl DataKey {
 
         // encode the key to a vector before encrypting
         let mut vkey = Vec::new();
-        vkey.write_u16::<BigEndian>(self.rname.as_bytes().len() as u16)?;
-        vkey.write_all(self.rname.as_bytes())?;
         vkey.write_all(&self.data)?;
 
         // encrypt the key and write the nonce into the file
@@ -283,8 +265,7 @@ impl DataKey {
     }
 
     /// Read a securely-encoded key from a target stream and verify it
-    pub fn read<R: ReadBytesExt>(&self,
-                                 ks: &Keystore,
+    pub fn read<R: ReadBytesExt>(ks: &Keystore,
                                  s: &mut R) -> Result<DataKey, Error> {
         let vsn = s.read_u16::<BigEndian>()?;
         if vsn > KEY_FMT_VERSION {
@@ -301,23 +282,10 @@ impl DataKey {
 
         // decrypt it
         let mut data = io::Cursor::new(ks.decrypt_master(crypted, &nonce)?);
-
-        // read the rname and data
-        let rname = {
-            let l = data.read_u16::<BigEndian>()?;
-            let mut buf = Vec::new();
-            buf.resize(l as usize, 0);
-            data.read_exact(&mut buf);
-            String::from_utf8(buf).map_err(|_| {Error::InvalidKeystore})?
-        };
-
         let mut key = [0u8; AEAD_KEY_LENGTH];
         data.read_exact(&mut key)?;
 
-        Ok(DataKey {
-            rname: rname,
-            data: key
-        })
+        Ok(DataKey { data: key })
     }
 }
 
@@ -385,7 +353,6 @@ impl Keystore {
         fs::create_dir(p)?;
 
         // create subdirectories
-        fs::create_dir(p.join("meta"))?;
         fs::create_dir(p.join("data"))?;
 
         // derive a root key
@@ -420,6 +387,20 @@ impl Keystore {
             outf.sync_all();
         }
 
+        {
+            // generate a metadata key
+            let mut rand = SystemRandom::new();
+            let mut metakey = [0u8; AEAD_KEY_LENGTH];
+            SystemRandom::new().fill(&mut metakey);
+
+            // store the key on disk
+            let keypath = p.join("metakey");
+            let mut f = fs::File::create(&keypath)?;
+            f.write(&metakey)?;
+            f.sync_all()?;
+        }
+
+        // finish
         Ok(Keystore {
             loc: p.to_path_buf(),
             mkey: cell::Cell::new(None)
@@ -435,7 +416,7 @@ impl Keystore {
         // verify keystore
         let root_meta = fs::metadata(&cpath)?;
         let mkhash_meta = fs::metadata(&cpath.join("mkey_hash"))?;
-        let mksalt_meta = fs::metadata(&cpath.join("mkey_hash"))?;
+        let mksalt_meta = fs::metadata(&cpath.join("mkey_salt"))?;
 
         if !root_meta.is_dir() { return Err(Error::InvalidKeystore); }
         if !mkhash_meta.is_file() { return Err(Error::InvalidKeystore); }
@@ -497,27 +478,6 @@ impl Keystore {
         }
     }
 
-    /// Create a new metadata key
-    pub fn new_meta_key(&mut self, nodename: &str) -> Result<MetaKey, Error> {
-        let mut rand = SystemRandom::new();
-        let mut key = [0u8; AEAD_KEY_LENGTH];
-        SystemRandom::new().fill(&mut key);
-
-        // store the key on disk
-        let meta_loc = self.loc.join("meta");
-        {
-            let keypath = meta_loc.join(nodename);
-            let mut f = fs::File::create(&keypath)?;
-            f.write(&key)?;
-            f.sync_all()?;
-        }
-
-        Ok(MetaKey {
-            data: key,
-            nname: nodename.to_owned()
-        })
-    }
-
     /// Create a new data block key
     pub fn new_data_key(&mut self, remote: &str) -> Result<DataKey, Error> {
         let mut rand = SystemRandom::new();
@@ -535,16 +495,12 @@ impl Keystore {
             f.sync_all()?;
         }
 
-        Ok(DataKey {
-            data: key,
-            rname: remote.to_owned()
-        })
+        Ok(DataKey { data: key })
     }
 
-    /// Read a given metadata key
-    pub fn read_meta_key(&self, nodename: &str) -> Result<MetaKey, Error> {
-        let meta_loc = self.loc.join("meta");
-        let keypath = meta_loc.join(nodename);
+    /// Get the local metadata key
+    pub fn get_meta_key(&self) -> Result<MetaKey, Error> {
+        let keypath = self.loc.join("metakey");
 
         let content = {
             let mut buf = Vec::new();
@@ -559,15 +515,30 @@ impl Keystore {
         } else {
             let mut arr = [0u8; AEAD_KEY_LENGTH];
             for i in 0..AEAD_KEY_LENGTH { arr[i] = content[i]; }
-            Ok(MetaKey {
-                data: arr,
-                nname: nodename.to_owned()
-            })
+            Ok(MetaKey { data: arr })
         }
     }
 
+    /// Decode and store a data key locally
+    pub fn store_data_key<R: ReadBytesExt>(&self, remote: &str, mut s: &mut R)
+            -> Result<DataKey, Error> {
+        // decode it
+        let key = DataKey::read(&self, &mut s)?;
+
+        // store it locally
+        let data_loc = self.loc.join("data");
+        {
+            let keypath = data_loc.join(remote);
+            let mut f = fs::File::create(&keypath)?;
+            f.write(&key.data)?;
+            f.sync_all()?;
+        }
+
+        Ok(key)
+    }
+
     /// Read a given data block key
-    pub fn read_data_key(&self, remote: &str) -> Result<DataKey, Error> {
+    pub fn get_data_key(&self, remote: &str) -> Result<DataKey, Error> {
         let data_loc = self.loc.join("data");
         let keypath = data_loc.join(remote);
 
@@ -584,7 +555,7 @@ impl Keystore {
         } else {
             let mut arr = [0u8; AEAD_KEY_LENGTH];
             for i in 0..AEAD_KEY_LENGTH { arr[i] = content[i]; }
-            Ok(DataKey { data: arr, rname: remote.to_owned() })
+            Ok(DataKey { data: arr })
         }
     }
 }
