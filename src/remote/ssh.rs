@@ -72,10 +72,6 @@ pub struct Backend {
     keystore: keys::Keystore
 }
 
-impl From<io::Error> for BackendError {
-    fn from(e: io::Error) -> BackendError { BackendError::IOError(e) }
-}
-
 impl From<self::ssh2::Error> for BackendError {
     fn from(e: self::ssh2::Error) -> BackendError {
         BackendError::BackendError(format!("libssh2 failure {}", e))
@@ -92,15 +88,31 @@ impl Backend {
     /// Initialize a store on the target if one doesn't exist already
     fn initialize(&mut self) -> Result<(), BackendError> {
         let sess = self.sess.lock().unwrap();
-        if sess.stat(&self.root.join("metadata")).is_err() ||
-            sess.stat(&self.root.join("blocks")).is_err() {
-            sess.mkdir(&self.root.join("metadata"), PERM_0755)?;
+        let meta_root = self.root.join("metadata");
+        let mkeys_root = self.root.join("metakeys");
+        if sess.stat(&meta_root).is_err() ||
+                sess.stat(&self.root.join("blocks")).is_err() {
+            sess.mkdir(&meta_root, PERM_0755)?;
+            sess.mkdir(&mkeys_root, PERM_0755)?;
             sess.mkdir(&self.root.join("blocks"), PERM_0755)?;
             sess.mkdir(&self.root.join("heads"), PERM_0755)?;
 
-            // generate data and metadata keys for the remote
-            let meta_key = self.keystore.new_meta_key(&self.host);
-            let data_key = self.keystore.new_data_key(&self.host);
+            // generate data key for the remote and store it there
+            let data_key = self.keystore.new_data_key(&self.host)?;
+            {
+                let mut dkey = sess.create(&self.root.join("datakey"))?;
+                data_key.write(&self.keystore, &mut dkey)?;
+            }
+        }
+
+        // make sure we have a meta key there
+        let our_meta = mkeys_root.join(&self.node);
+        if sess.stat(&our_meta).is_err() {
+            let meta_key = self.keystore.new_meta_key(&self.node)?;
+            {
+                let mut mkey = sess.create(&our_meta)?;
+                meta_key.write(&self.keystore, &mut mkey);
+            }
         }
         Ok(())
     }

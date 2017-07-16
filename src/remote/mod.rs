@@ -31,7 +31,8 @@ pub enum BackendError {
     NoSuchScheme,
     BackendError(String),
     InvalidURL(&'static str),
-    IOError(io::Error)
+    IOError(io::Error),
+    KeyError(keys::Error)
 }
 
 impl fmt::Display for BackendError {
@@ -53,6 +54,8 @@ impl fmt::Display for BackendError {
                 write!(f, "I/O error: {}", e),
             &BackendError::BackendError(ref e)   =>
                 write!(f, "backend error: {}", e),
+            &BackendError::KeyError(ref e) =>
+                write!(f, "keystore error: {}", e),
         }
     }
 }
@@ -68,8 +71,16 @@ impl error::Error for BackendError {
             &BackendError::InvalidURL(ref s)  => "invalid backend URL",
             &BackendError::IOError(ref e)     => "I/O error",
             &BackendError::BackendError(ref s)=> "backend error",
+            &BackendError::KeyError(ref e)    => "keystore error",
         }
     }
+}
+
+impl From<io::Error> for BackendError {
+    fn from(e: io::Error) -> BackendError { BackendError::IOError(e) }
+}
+impl From<keys::Error> for BackendError {
+    fn from(e: keys::Error) -> BackendError { BackendError::KeyError(e) }
 }
 
 pub type BackendResult<T> = Result<T, BackendError>;
