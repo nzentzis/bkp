@@ -6,6 +6,7 @@ mod keys;
 mod metadata;
 mod remote;
 mod util;
+mod history;
 
 extern crate ring;
 extern crate untrusted;
@@ -148,9 +149,42 @@ fn do_dest(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
 }
 
 fn do_test(args: &clap::ArgMatches, opts: &GlobalOptions) {
-    //let profile = args.value_of("profile").unwrap();
-    //let all = args.is_present("all");
-    unimplemented!()
+    let profile = match args.value_of("profile").unwrap() {
+        "quick"      => history::IntegrityTestMode::Quick,
+        "normal"     => history::IntegrityTestMode::Normal,
+        "slow"       => history::IntegrityTestMode::Slow,
+        "exhaustive" => history::IntegrityTestMode::Exhaustive,
+        _            => panic!("unexpected test mode string")
+    };
+
+    let names = opts.cfg.targets.iter().map(|x| {x.name.clone()})
+        .chain(opts.cfg.target_groups.iter().map(|x| {x.name.clone()}));
+
+    for t in names {
+        let b = connect_backend(t.clone(), opts);
+        if let Err(e) = b {
+            println!("bkp: skipping destination '{}': {}", t, e);
+            continue;
+        }
+
+        // construct a history object
+        let mut b = b.unwrap();
+        let mut hist = history::History::new(&mut b);
+        if let Err(e) = hist {
+            println!("bkp: skipping destination '{}': {}", t, e);
+            continue;
+        }
+
+        // run the check
+        match hist.unwrap().check(profile) {
+            Err(e) => {
+                println!("bkp: skipping destination '{}': {}", t, e);
+                continue;
+            },
+            Ok(true)  => println!("{}: okay", t),
+            Ok(false) => println!("{}: failed", t),
+        }
+    }
 }
 
 fn do_stat(args: &clap::ArgMatches, opts: &GlobalOptions) {
