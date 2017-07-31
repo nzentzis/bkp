@@ -2,18 +2,29 @@ use std::boxed::Box;
 use std::result;
 use std::error;
 use std::fmt;
+use std::io;
+use std::fs;
+use std::path::Path;
+use std::io::prelude::*;
 
+use chunking::Chunkable;
 use remote::{BackendError, MetadataStore, BlockStore,  Backend};
 use metadata::{MetaObjectContents, MetaObject, FSMetadata, IdentityTag};
 
 #[derive(Debug)]
 pub enum Error {
+    InvalidArgument,
+    IntegrityError,
+    IOError(io::Error),
     Backend(BackendError),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> result::Result<(), fmt::Error> {
         match self {
+            &Error::InvalidArgument=> write!(f, "invalid argument"),
+            &Error::IntegrityError => write!(f, "integrity error"),
+            &Error::IOError(ref e) => write!(f, "I/O error: {}", e),
             &Error::Backend(ref e) => write!(f, "backend error: {}", e),
         }
     }
@@ -22,6 +33,9 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn description(&self) -> &str {
         match self {
+            &Error::InvalidArgument=> "invalid argument",
+            &Error::IntegrityError => "integrity error",
+            &Error::IOError(ref e) => "I/O error",
             &Error::Backend(ref e) => "backend error",
         }
     }
@@ -30,6 +44,9 @@ pub type Result<T> = result::Result<T, Error>;
 
 impl From<BackendError> for Error {
     fn from(e: BackendError) -> Error { Error::Backend(e) }
+}
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Error { Error::IOError(e) }
 }
 
 /// The mode to use when running an integrity test
@@ -45,7 +62,7 @@ impl IntegrityTestMode {
     fn check_hashes(&self) -> bool { *self == IntegrityTestMode::Exhaustive }
 }
 
-/// A wrapper struct 
+/// A wrapper struct to provide history access on top of a given backend
 pub struct History<'a> {
     backend: &'a mut Box<Backend>
 }
@@ -89,7 +106,7 @@ impl<'a> History<'a> {
             -> Result<bool> {
         let mut obj = self.backend.read_meta(tag)?;
         if let MetaObjectContents::TreeObject
-                { name: _, meta: _, children: children} = obj.content {
+                { name: _, meta: _, children} = obj.content {
             for c in children.iter() {
                 if !self.check_file(mode, c)? {
                     return Ok(false);
@@ -127,5 +144,60 @@ impl<'a> History<'a> {
             }
         }
         Ok(true)
+    }
+
+    /// Try to retrieve the given path from the latest snapshot
+    /// 
+    /// If no snapshots are stored or the object doesn't exist, this will return
+    /// `Ok(None)`.
+    pub fn get_path(&mut self, path: &Path) -> Result<Option<MetaObject>> {
+        unimplemented!()
+    }
+
+    /// Create a file, tree, or symlink object from a path on disk.
+    /// 
+    /// The given path should be canonical.
+    pub fn store_path(&mut self, path: &Path) -> Result<IdentityTag> {
+        let meta = fs::symlink_metadata(path)?;
+        let ftype = meta.file_type();
+        let fname = path.file_name().ok_or(Error::InvalidArgument)?;
+
+        // TODO: checks here to avoid redundant stores
+        
+        if ftype.is_file() {
+            // break it into chunks and store them
+            let mut f = fs::OpenOptions::new()
+                            .read(true)
+                            .open(path)?;
+            let mut blocks = Vec::new();
+            for c in f.bytes().chunks() {
+                blocks.push(self.backend.write_block(&c?)?);
+            }
+
+            // construct a new meta-object and store it
+            let obj = MetaObject::file(fname, meta, blocks);
+            Ok(self.backend.write_meta(&obj)?)
+        } else if ftype.is_dir() {
+            // store each child
+            let mut children = Vec::new();
+            for entry in fs::read_dir(&path)? {
+                let entry = entry?; // safely unwrap the result
+                let pth = entry.path();
+
+                // store the child node
+                children.push(self.store_path(&pth)?);
+            }
+
+            // build and store the new object
+            let obj = MetaObject::tree(fname, meta, children);
+            Ok(self.backend.write_meta(&obj)?)
+        } else if ftype.is_symlink() {
+            // store the symlink object
+            let tgt = fs::read_link(&path)?;
+            let obj = MetaObject::symlink(fname, meta, &tgt);
+            Ok(self.backend.write_meta(&obj)?)
+        } else {
+            unimplemented!()
+        }
     }
 }

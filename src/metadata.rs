@@ -2,8 +2,12 @@ extern crate ring;
 extern crate byteorder;
 
 use std::time;
+use std::fs;
 use std::io;
-use std::io::{Read, Write};
+use std::io::prelude::*;
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::MetadataExt;
 use metadata::byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
 use util::Hasher;
 
@@ -23,6 +27,7 @@ pub fn tag_from_digest(d: ring::digest::Digest) -> IdentityTag {
     r
 }
 
+#[derive(Copy, Clone, Debug)]
 pub struct FSMetadata {
     /// Modification time
     pub mtime: time::SystemTime,
@@ -65,6 +70,21 @@ impl FSMetadata {
         }
 
         f.write_u16::<LittleEndian>(self.mode as u16)
+    }
+}
+
+pub trait IntoFSMetadata {
+    fn into_metadata(self) -> FSMetadata;
+}
+
+impl IntoFSMetadata for fs::Metadata {
+    fn into_metadata(self) -> FSMetadata {
+        FSMetadata {
+            mtime: self.modified().unwrap(),
+            atime: self.accessed().unwrap(),
+            ctime: self.created().unwrap(),
+            mode: self.mode()
+        }
     }
 }
 
@@ -129,6 +149,51 @@ impl MetaObject {
         let mut buf = [0u8; IDENTITY_LEN];
         f.read_exact(&mut buf)?;
         Ok(buf)
+    }
+
+    /// Utility function to generate a new file object
+    /// 
+    /// Fills in the creation time field with the current time
+    pub fn file<S, M, I>(name: &S, meta: M, data: I) -> Self
+        where S: AsRef<OsStr> + ?Sized,
+              M: IntoFSMetadata,
+              I: IntoIterator<Item=IdentityTag> {
+        MetaObject {
+            create_time: time::SystemTime::now(),
+            content: MetaObjectContents::FileObject {
+                name: name.as_ref().to_owned().into_vec(),
+                meta: meta.into_metadata(),
+                body: data.into_iter().collect() } }
+    }
+
+    /// Utility function to generate a new tree object
+    /// 
+    /// Fills in the creation time field with the current time
+    pub fn tree<S, M, I>(name: &S, meta: M, children: I) -> Self
+        where S: AsRef<OsStr> + ?Sized,
+              M: IntoFSMetadata,
+              I: IntoIterator<Item=IdentityTag> {
+        MetaObject {
+            create_time: time::SystemTime::now(),
+            content: MetaObjectContents::TreeObject {
+                name: name.as_ref().to_owned().into_vec(),
+                meta: meta.into_metadata(),
+                children: children.into_iter().collect() } }
+    }
+
+    /// Utility function to generate a new symlink object
+    /// 
+    /// Fills in the creation time field with the current time
+    pub fn symlink<S, M, T>(name: &S, meta: M, tgt: &T) -> Self
+        where S: AsRef<OsStr> + ?Sized,
+              T: AsRef<OsStr> + ?Sized,
+              M: IntoFSMetadata {
+        MetaObject {
+            create_time: time::SystemTime::now(),
+            content: MetaObjectContents::SymlinkObject {
+                name: name.as_ref().to_owned().into_vec(),
+                meta: meta.into_metadata(),
+                target: tgt.as_ref().to_owned().into_vec() } }
     }
 
     /// Read a serialized meta object from the passed stream
