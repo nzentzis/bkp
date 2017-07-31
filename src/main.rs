@@ -7,6 +7,7 @@ mod metadata;
 mod remote;
 mod util;
 mod history;
+mod chunking;
 
 extern crate ring;
 extern crate untrusted;
