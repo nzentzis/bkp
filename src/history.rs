@@ -9,7 +9,8 @@ use std::io::prelude::*;
 
 use chunking::Chunkable;
 use remote::{BackendError, MetadataStore, BlockStore,  Backend};
-use metadata::{MetaObjectContents, MetaObject, FSMetadata, IdentityTag};
+use metadata::{ Snapshot,   TreeObject, FileObject, SymlinkObject, MetaObject,
+                FSMetadata, IdentityTag};
 
 #[derive(Debug)]
 pub enum Error {
@@ -88,18 +89,16 @@ impl<'a> History<'a> {
     fn check_file(&mut self, mode: IntegrityTestMode, tag: &IdentityTag)
             -> Result<bool> {
         let mut obj = self.backend.read_meta(tag)?;
-        match obj.content {
-            MetaObjectContents::FileObject {name:_, meta:_, body: blocks} => {
-                for blk in blocks.iter() {
+        match obj {
+            MetaObject::File(file) => {
+                for blk in file.body.iter() {
                     if !self.check_block(mode, &blk)? {
                         return Ok(false);
                     }
                 }
                 Ok(true)
             },
-            MetaObjectContents::SymlinkObject {name:_, meta:_, target:_} => {
-                Ok(true)
-            },
+            MetaObject::Symlink(_) => {Ok(true)},
             _ => Ok(false)
         }
     }
@@ -108,9 +107,8 @@ impl<'a> History<'a> {
     fn check_tree(&mut self, mode: IntegrityTestMode, tag: &IdentityTag)
             -> Result<bool> {
         let mut obj = self.backend.read_meta(tag)?;
-        if let MetaObjectContents::TreeObject
-                { name: _, meta: _, children} = obj.content {
-            for c in children.iter() {
+        if let MetaObject::Tree(tree) = obj {
+            for c in tree.children.iter() {
                 if !self.check_file(mode, c)? {
                     return Ok(false);
                 }
@@ -129,17 +127,16 @@ impl<'a> History<'a> {
 
         // traverse the snapshot chain
         while let Some(root) = head {
-            if let MetaObjectContents::VersionObject
-                    { root: r, parent: par } = root.content {
+            if let MetaObject::Snapshot(snap) = root {
                 // move to the parent if needed
-                if let Some(p) = par {
+                if let Some(p) = snap.parent {
                     head = Some(self.backend.read_meta(&p)?);
                 } else {
                     head = None;
                 }
 
                 // check the file structure
-                if !self.check_tree(mode, &r)? {
+                if !self.check_tree(mode, &snap.root)? {
                     return Ok(false);
                 }
             } else {
@@ -157,7 +154,7 @@ impl<'a> History<'a> {
         }
         let snapshot = snapshot.unwrap();
 
-        if let MetaObjectContents::VersionObject {root,parent} = snapshot.content {
+        if let MetaObject::Snapshot(_) = snapshot {
             Ok(Some(snapshot))
         } else {
             Err(Error::NoValidSnapshot)

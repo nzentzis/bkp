@@ -88,60 +88,72 @@ impl IntoFSMetadata for fs::Metadata {
     }
 }
 
-pub enum MetaObjectContents {
-    /// A single logical snapshot of a coherent filesystem state
-    VersionObject {
-        /// the root TreeObject's identity tag
-        root: IdentityTag,
-
-        /// the most recent snapshot upon which this one was based
-        parent: Option<IdentityTag>
-    },
-
-    /// A logical snapshot of a filesystem tree
-    TreeObject {
-        /// filesystem name as a byte string
-        name: Vec<u8>,
-
-        /// filesystem metadata attached to this object
-        meta: FSMetadata,
-
-        /// child objects
-        children: Vec<IdentityTag>
-    },
-
-    /// Data about the contents of a given file and the blocks that make it up
-    FileObject {
-        /// filesystem name as a byte string
-        name: Vec<u8>,
-
-        /// filesystem metadata attached to this object
-        meta: FSMetadata,
-
-        /// the IDs of the file's content chunks
-        body: Vec<IdentityTag>
-    },
-
-    /// Data about a symbolic link
-    SymlinkObject {
-        /// filesystem name as a byte string
-        name: Vec<u8>,
-
-        /// filesystem metadata attached to this object
-        meta: FSMetadata,
-
-        /// the symlink's target as a byte string
-        target: Vec<u8>
-    }
-}
-
-pub struct MetaObject {
+/// A single logical snapshot of a coherent filesystem state
+pub struct Snapshot {
     /// The object's creation time. Note that this applies to the *object*, not
     /// any files or trees that it contains.
     pub create_time: time::SystemTime,
 
-    /// The object's contents
-    pub content: MetaObjectContents
+    /// the root TreeObject's identity tag
+    pub root: IdentityTag,
+
+    /// the most recent snapshot upon which this one was based
+    pub parent: Option<IdentityTag>
+}
+
+/// A logical snapshot of a filesystem tree
+pub struct TreeObject {
+    /// The object's creation time. Note that this applies to the *object*, not
+    /// any files or trees that it contains.
+    pub create_time: time::SystemTime,
+
+    /// filesystem name as a byte string
+    pub name: Vec<u8>,
+
+    /// filesystem metadata attached to this object
+    pub meta: FSMetadata,
+
+    /// child objects
+    pub children: Vec<IdentityTag>
+}
+
+/// Data about the contents of a given file and the blocks that make it up
+pub struct FileObject {
+    /// The object's creation time. Note that this applies to the *object*, not
+    /// any files or trees that it contains.
+    pub create_time: time::SystemTime,
+
+    /// filesystem name as a byte string
+    pub name: Vec<u8>,
+
+    /// filesystem metadata attached to this object
+    pub meta: FSMetadata,
+
+    /// the IDs of the file's content chunks
+    pub body: Vec<IdentityTag>
+}
+
+/// Data about a symbolic link
+pub struct SymlinkObject {
+    /// The object's creation time. Note that this applies to the *object*, not
+    /// any files or trees that it contains.
+    pub create_time: time::SystemTime,
+
+    /// filesystem name as a byte string
+    pub name: Vec<u8>,
+
+    /// filesystem metadata attached to this object
+    pub meta: FSMetadata,
+
+    /// the symlink's target as a byte string
+    pub target: Vec<u8>
+}
+
+pub enum MetaObject {
+    Snapshot(Snapshot),
+    Tree(TreeObject),
+    File(FileObject),
+    Symlink(SymlinkObject)
 }
 
 impl MetaObject {
@@ -158,12 +170,11 @@ impl MetaObject {
         where S: AsRef<OsStr> + ?Sized,
               M: IntoFSMetadata,
               I: IntoIterator<Item=IdentityTag> {
-        MetaObject {
+        MetaObject::File(FileObject {
             create_time: time::SystemTime::now(),
-            content: MetaObjectContents::FileObject {
-                name: name.as_ref().to_owned().into_vec(),
-                meta: meta.into_metadata(),
-                body: data.into_iter().collect() } }
+            name: name.as_ref().to_owned().into_vec(),
+            meta: meta.into_metadata(),
+            body: data.into_iter().collect() })
     }
 
     /// Utility function to generate a new tree object
@@ -173,12 +184,11 @@ impl MetaObject {
         where S: AsRef<OsStr> + ?Sized,
               M: IntoFSMetadata,
               I: IntoIterator<Item=IdentityTag> {
-        MetaObject {
+        MetaObject::Tree(TreeObject {
             create_time: time::SystemTime::now(),
-            content: MetaObjectContents::TreeObject {
-                name: name.as_ref().to_owned().into_vec(),
-                meta: meta.into_metadata(),
-                children: children.into_iter().collect() } }
+            name: name.as_ref().to_owned().into_vec(),
+            meta: meta.into_metadata(),
+            children: children.into_iter().collect() })
     }
 
     /// Utility function to generate a new symlink object
@@ -188,12 +198,11 @@ impl MetaObject {
         where S: AsRef<OsStr> + ?Sized,
               T: AsRef<OsStr> + ?Sized,
               M: IntoFSMetadata {
-        MetaObject {
-            create_time: time::SystemTime::now(),
-            content: MetaObjectContents::SymlinkObject {
+        MetaObject::Symlink(SymlinkObject {
+                create_time: time::SystemTime::now(),
                 name: name.as_ref().to_owned().into_vec(),
                 meta: meta.into_metadata(),
-                target: tgt.as_ref().to_owned().into_vec() } }
+                target: tgt.as_ref().to_owned().into_vec() })
     }
 
     /// Read a serialized meta object from the passed stream
@@ -212,7 +221,9 @@ impl MetaObject {
                 let parent =
                     if f.read_u8()? != 0 { Some(MetaObject::load_id(f)?) }
                     else { None };
-                MetaObjectContents::VersionObject { root: root, parent: parent }
+                MetaObject::Snapshot(Snapshot {
+                    create_time: created_time,
+                    root: root, parent: parent })
             },
             1u8 => { // tree
                 let namelen = f.read_u16::<LittleEndian>()?;
@@ -226,8 +237,9 @@ impl MetaObject {
                     children.push(MetaObject::load_id(&mut f)?);
                 }
 
-                MetaObjectContents::TreeObject {
-                    name: name, meta: meta, children: children }
+                MetaObject::Tree(TreeObject {
+                    create_time: created_time,
+                    name: name, meta: meta, children: children })
             },
             2u8 => { // symlink
                 let namelen = f.read_u16::<LittleEndian>()?;
@@ -240,8 +252,9 @@ impl MetaObject {
                 let mut tgt = vec![0u8; namelen as usize];
                 f.read_exact(&mut tgt)?;
 
-                MetaObjectContents::SymlinkObject {
-                    name: name, meta: meta, target: tgt }
+                MetaObject::Symlink(SymlinkObject {
+                    create_time: created_time,
+                    name: name, meta: meta, target: tgt })
             },
             3u8 => { // file
                 let namelen = f.read_u16::<LittleEndian>()?;
@@ -256,64 +269,69 @@ impl MetaObject {
                     chunks.push(MetaObject::load_id(&mut f)?);
                 }
 
-                MetaObjectContents::FileObject {
-                    name: name, meta: meta, body: chunks }
+                MetaObject::File(FileObject {
+                    create_time: created_time,
+                    name: name, meta: meta, body: chunks })
             },
         };
 
-        Ok(MetaObject {
-            create_time: created_time,
-            content: content
-        })
+        Ok(content)
+    }
+
+    fn write_time<W: Write>(f: &mut W, t: time::SystemTime) -> io::Result<()> {
+        match t.duration_since(time::UNIX_EPOCH) {
+            Err(e) => f.write_u64::<LittleEndian>(0), // clamp to the epoch
+            Ok(x)  => f.write_u64::<LittleEndian>(x.as_secs())
+        }
     }
 
     /// Save the metaobject to the given writer, and return the resulting ID
     /// tag.
     pub fn save<W: Write>(&self, mut f: &mut W) -> io::Result<IdentityTag> {
         let mut f = Hasher::sha256(f);
-        match self.create_time.duration_since(time::UNIX_EPOCH) {
-            Err(e) => f.write_u64::<LittleEndian>(0)?, // clamp to the epoch
-            Ok(x)  => f.write_u64::<LittleEndian>(x.as_secs())?
-        }
 
-        match self.content {
-            MetaObjectContents::VersionObject {ref root, ref parent} => {
+        match self {
+            &MetaObject::Snapshot(ref snap) => {
+                MetaObject::write_time(&mut f, snap.create_time)?;
                 f.write_u8(0u8)?;
-                f.write(root)?;
-                if let &Some(p) = parent {
+                f.write(&snap.root)?;
+                if let Some(p) = snap.parent {
                     f.write(&p)?;
                 }
             },
-            MetaObjectContents::TreeObject {ref name, ref meta, ref children} => {
+            &MetaObject::Tree(ref tree) => {
+                MetaObject::write_time(&mut f, tree.create_time)?;
                 f.write_u8(1u8)?;
-                f.write_u16::<LittleEndian>(name.len() as u16)?;
-                f.write(&name)?;
-                meta.save(&mut f)?;
+                f.write_u16::<LittleEndian>(tree.name.len() as u16)?;
+                f.write(&tree.name)?;
+                tree.meta.save(&mut f)?;
 
-                f.write_u32::<LittleEndian>(children.len() as u32);
-                for c in children.iter() {
+                f.write_u32::<LittleEndian>(tree.children.len() as u32);
+                for c in tree.children.iter() {
                     f.write(c)?;
                 }
             },
-            MetaObjectContents::FileObject {ref name, ref meta, ref body} => {
+            &MetaObject::File(ref file) => {
+                MetaObject::write_time(&mut f, file.create_time)?;
                 f.write_u8(3u8)?;
-                f.write_u16::<LittleEndian>(name.len() as u16)?;
-                f.write(&name)?;
-                meta.save(&mut f)?;
+                f.write_u16::<LittleEndian>(file.name.len() as u16)?;
+                f.write(&file.name)?;
+                file.meta.save(&mut f)?;
 
-                f.write_u32::<LittleEndian>(body.len() as u32);
-                for c in body.iter() {
+                f.write_u32::<LittleEndian>(file.body.len() as u32);
+                for c in file.body.iter() {
                     f.write(c)?;
                 }
             },
-            MetaObjectContents::SymlinkObject {ref name, ref meta, ref target} => {
+            &MetaObject::Symlink(ref link) => {
+                MetaObject::write_time(&mut f, link.create_time)?;
                 f.write_u8(2u8)?;
-                f.write_u16::<LittleEndian>(name.len() as u16)?;
-                f.write(&name)?;
-                meta.save(&mut f)?;
+                f.write_u16::<LittleEndian>(link.name.len() as u16)?;
+                f.write(&link.name)?;
+                link.meta.save(&mut f)?;
 
-                f.write_u32::<LittleEndian>(name.len() as u32)?;
-                f.write(&name)?;
+                f.write_u32::<LittleEndian>(link.name.len() as u32)?;
+                f.write(&link.name)?;
             },
         }
 
