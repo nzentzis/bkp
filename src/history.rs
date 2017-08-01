@@ -15,6 +15,7 @@ use metadata::{MetaObjectContents, MetaObject, FSMetadata, IdentityTag};
 pub enum Error {
     InvalidArgument,
     IntegrityError,
+    NoValidSnapshot,
     IOError(io::Error),
     Backend(BackendError),
 }
@@ -24,6 +25,7 @@ impl fmt::Display for Error {
         match self {
             &Error::InvalidArgument=> write!(f, "invalid argument"),
             &Error::IntegrityError => write!(f, "integrity error"),
+            &Error::NoValidSnapshot=> write!(f, "no valid snapshot"),
             &Error::IOError(ref e) => write!(f, "I/O error: {}", e),
             &Error::Backend(ref e) => write!(f, "backend error: {}", e),
         }
@@ -35,6 +37,7 @@ impl error::Error for Error {
         match self {
             &Error::InvalidArgument=> "invalid argument",
             &Error::IntegrityError => "integrity error",
+            &Error::NoValidSnapshot=> "no valid snapshot",
             &Error::IOError(ref e) => "I/O error",
             &Error::Backend(ref e) => "backend error",
         }
@@ -144,6 +147,21 @@ impl<'a> History<'a> {
             }
         }
         Ok(true)
+    }
+
+    /// Retrieve the most recent snapshot, if any
+    pub fn get_snapshot(&mut self) -> Result<Option<MetaObject>> {
+        let snapshot = self.backend.get_head()?;
+        if snapshot.is_none() {
+            return Ok(None);
+        }
+        let snapshot = snapshot.unwrap();
+
+        if let MetaObjectContents::VersionObject {root,parent} = snapshot.content {
+            Ok(Some(snapshot))
+        } else {
+            Err(Error::NoValidSnapshot)
+        }
     }
 
     /// Try to retrieve the given path from the latest snapshot
