@@ -1,5 +1,3 @@
-use std::iter::repeat;
-
 pub struct Chunks<E, I: Iterator<Item=Result<u8, E>> + ?Sized> {
     data: Vec<u8>,
     sum: u32,
@@ -57,6 +55,8 @@ impl<E, I: Iterator<Item=Result<u8, E>>> Iterator for Chunks<E, I> {
 
 #[test]
 fn chunk_test() {
+    use std::iter::repeat; 
+
     let ok: Result<u8, ()> = Ok(1u8);
     let mut h1 = repeat(ok).chunks();
     let r1 = h1.next();

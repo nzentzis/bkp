@@ -5,14 +5,11 @@ extern crate owning_ref;
 extern crate ring;
 extern crate rpassword;
 
-use std::ffi;
 use std::env;
-use std::io;
 use std::ops::Drop;
 use std::path::{Path, PathBuf};
 use std::net::{SocketAddr, TcpStream};
 use std::boxed::Box;
-use std::thread;
 use std::sync::Mutex;
 use std::iter::FromIterator;
 use std::cell::Cell;
@@ -20,17 +17,13 @@ use std::cell::Cell;
 use std::io::{Cursor,Read,Write};
 
 use self::ssh2::{Session, Sftp};
-use self::futures::future;
-use self::futures::future::Future;
 use self::futures::sync::oneshot;
 use self::owning_ref::OwningHandle;
-use self::rpassword::prompt_password_stderr;
-use self::ring::rand::{SecureRandom,SystemRandom};
 
 use metadata;
 use metadata::{IdentityTag, MetaObject, tag_from_digest};
 use remote::*;
-use keys::{MetaKey, DataKey, Keystore};
+use keys::{MetaKey, DataKey};
 use util::ToHex;
 
 const PERM_0755: i32 = 0x1ed;
@@ -62,6 +55,7 @@ pub struct ConnectOptions<'a> {
 
 pub struct Backend {
     sess: Mutex<OwningHandle<Box<Session>, Box<Sftp<'static>>>>,
+    #[allow(dead_code)]
     sock: TcpStream,
 
     /// The root path on the remote host
@@ -118,15 +112,12 @@ impl Backend {
         }
 
         // make sure we have the remote's data key locally
-        let dkey = match self.keystore.get_data_key(&self.host) {
-            Ok(k) => k,
-            Err(_) => {
-                println!("retriving remote data key");
-                // sync it
-                let mut f = sess.open(&self.root.join("datakey"))?;
-                self.keystore.store_data_key(&self.host, &mut f)?
-            }
-        };
+        if let Err(_) = self.keystore.get_data_key(&self.host) {
+            println!("retriving remote data key");
+            // sync it
+            let mut f = sess.open(&self.root.join("datakey"))?;
+            self.keystore.store_data_key(&self.host, &mut f)?;
+        }
 
         // make sure we have the appropriate meta key there
         let our_meta = mkeys_root.join(&self.node);
@@ -134,7 +125,7 @@ impl Backend {
             let meta_key = self.keystore.get_meta_key()?;
             {
                 let mut mkey = sess.create(&our_meta)?;
-                meta_key.write(&self.keystore, &mut mkey);
+                meta_key.write(&self.keystore, &mut mkey)?;
             }
         }
 
@@ -167,8 +158,8 @@ impl Backend {
     fn lock(&mut self) -> Result<(), BackendError> {
         let lock_path = self.root.join("bkp.lock");
         let sess = self.sess.lock().unwrap();
-        let mut f = sess.open_mode(&lock_path, self::ssh2::CREATE,
-                                   PERM_0755, self::ssh2::OpenType::File)?;
+        sess.open_mode(&lock_path, self::ssh2::CREATE,
+                       PERM_0755, self::ssh2::OpenType::File)?;
         Ok(())
     }
 
@@ -192,7 +183,7 @@ impl MetadataStore for Backend {
         for (root,stat) in prefix_files.into_iter() {
             if stat.is_dir() {
                 // prefix dir
-                for (file,fstat) in sess.readdir(&root)?.into_iter() {
+                for (file,_) in sess.readdir(&root)?.into_iter() {
                     if let Some(nm) = file.file_name() {
                         let nm = nm.to_str();
                         if nm.is_none() {
@@ -265,7 +256,7 @@ impl MetadataStore for Backend {
         path.push(prefix);
 
         // make sure the dir exists
-        if sess.stat(&path).is_err() { sess.mkdir(&path, PERM_0755); }
+        if sess.stat(&path).is_err() { sess.mkdir(&path, PERM_0755)?; }
 
         // short-circuit if it's already stored
         path.push(name);
@@ -286,7 +277,7 @@ impl MetadataStore for Backend {
         let mut ident = [0u8; metadata::IDENTITY_LEN];
         {
             let sess = self.sess.lock().unwrap();
-            let mut f = sess.open(&path);
+            let f = sess.open(&path);
             match f {
                 Ok(mut f) => f.read_exact(&mut ident)?,
                 Err(_)    => return Ok(None)
@@ -347,7 +338,7 @@ impl BlockStore for Backend {
         path.push(prefix);
 
         // make sure the dir exists
-        if sess.stat(&path).is_err() { sess.mkdir(&path, PERM_0755); }
+        if sess.stat(&path).is_err() { sess.mkdir(&path, PERM_0755)?; }
 
         // short-circuit if it's already stored
         path.push(name);
@@ -390,7 +381,7 @@ fn authenticate(sess: &mut Session, user: &str, pass: Option<&String>,
 impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
     fn create(opts: ConnectOptions) -> Result<Backend, BackendError> {
         let mut sess = Session::new().ok_or(BackendError::ResourceError)?;
-        let mut conn = TcpStream::connect(opts.addr)?;
+        let conn = TcpStream::connect(opts.addr)?;
 
         // configure and start the SSH session
         sess.set_compress(true);
@@ -443,6 +434,6 @@ impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
 
 impl Drop for Backend {
     fn drop(&mut self) {
-        self.unlock();
+        let _ = self.unlock();
     }
 }

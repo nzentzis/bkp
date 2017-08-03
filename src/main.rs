@@ -31,6 +31,7 @@ macro_rules! err_write {
         writeln!(std::io::stderr(), $s, $($e,)*).ok().unwrap_or(())}
 }
 
+#[allow(dead_code)]
 struct GlobalOptions {
     data_dir: PathBuf,
     keystore: keys::Keystore,
@@ -115,7 +116,7 @@ fn do_dest(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
             opts.cfg.targets.push(tgt);
             opts.cfg.save().unwrap_or_fail("Failed to save config file");
         },
-        ("list", Some(m)) => { // list destinations
+        ("list", Some(_)) => { // list destinations
             let max_left_col = opts.cfg.targets.iter()
                     .map(|ref x| x.name.len())
                     .max().unwrap_or(0);
@@ -170,7 +171,7 @@ fn do_test(args: &clap::ArgMatches, opts: &GlobalOptions) {
 
         // construct a history object
         let mut b = b.unwrap();
-        let mut hist = history::History::new(&mut b);
+        let hist = history::History::new(&mut b);
         if let Err(e) = hist {
             println!("bkp: skipping destination '{}': {}", t, e);
             continue;
@@ -197,7 +198,17 @@ fn do_clean(args: &clap::ArgMatches, opts: &GlobalOptions) {
 }
 
 fn do_snap(args: &clap::ArgMatches, opts: &GlobalOptions) {
-    unimplemented!()
+    let remote = args.value_of("remote").unwrap().to_owned();
+    let snap_paths: Vec<&str> = args.values_of("local").unwrap().collect();
+
+    let mut remote = connect_backend(remote, opts)
+        .unwrap_or_fail("backend connection failed");
+
+    // construct a history object
+    let mut history = history::History::new(&mut remote)
+        .unwrap_or_fail("failed to configure history layer");
+
+    // update paths
 }
 
 fn do_restore(args: &clap::ArgMatches, opts: &GlobalOptions) {
@@ -296,6 +307,7 @@ fn main() {
            "Match data based on whether it exists on the host")))
         (@subcommand snap =>
          (about: "Take a snapshot of local files")
+         (@arg remote: +takes_value "Remote to store data in")
          (@arg local: +takes_value ... "Files or directories to snapshot")
          (@arg no_trust_mtime: -T --("no-trust-mtime")
           "Use content hashes to check for file changes rather than FS's mtime"))

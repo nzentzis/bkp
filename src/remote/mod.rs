@@ -6,16 +6,13 @@ extern crate tokio_core;
 extern crate url;
 
 use std::io;
-use std::time;
-use std::os::unix;
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use std::marker::Sized;
 
 use std::fmt;
 use std::error;
 use std::net::{SocketAddr, ToSocketAddrs};
 
-use self::futures::Future;
 use self::url::Url;
 
 use keys;
@@ -23,6 +20,7 @@ use config;
 use metadata::{IdentityTag, MetaObject};
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum BackendError {
     ConnectionFailed,
     InvalidOption,
@@ -68,10 +66,10 @@ impl error::Error for BackendError {
             &BackendError::ResourceError      => "insufficient resources",
             &BackendError::CommsError         => "communications error",
             &BackendError::NoSuchScheme       => "invalid backend URL scheme",
-            &BackendError::InvalidURL(ref s)  => "invalid backend URL",
-            &BackendError::IOError(ref e)     => "I/O error",
-            &BackendError::BackendError(ref s)=> "backend error",
-            &BackendError::KeyError(ref e)    => "keystore error",
+            &BackendError::InvalidURL(_)      => "invalid backend URL",
+            &BackendError::IOError(_)         => "I/O error",
+            &BackendError::BackendError(_)    => "backend error",
+            &BackendError::KeyError(_)        => "keystore error",
         }
     }
 }
@@ -150,8 +148,10 @@ pub fn connect_tgt(tgt: &config::BackupTarget,
             let user = tgt.user.clone().unwrap_or(tgt.url.username().to_owned());
             let path = {
                 let mut u = tgt.url.clone();
-                u.set_host(None);
-                u.set_scheme("file");
+                u.set_host(None)
+                    .map_err(|_| BackendError::ConnectionFailed)?;
+                u.set_scheme("file")
+                    .map_err(|_| BackendError::ConnectionFailed)?;
                 let p = &u.path()[1..];
                 PathBuf::from(p)
             };
@@ -172,6 +172,7 @@ pub fn connect_tgt(tgt: &config::BackupTarget,
 }
 
 /// Connect to a given group of backup targets
+#[allow(unused_variables, dead_code)]
 pub fn connect_group(tgts: Vec<&config::BackupTarget>,
                      nodename: &str,
                      ks: &keys::Keystore) -> BackendResult<Box<Backend>> {

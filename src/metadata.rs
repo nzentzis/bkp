@@ -57,15 +57,15 @@ impl FSMetadata {
 
     fn save<W: Write>(&self, f: &mut W) -> io::Result<()> {
         match self.mtime.duration_since(time::UNIX_EPOCH) {
-            Err(e) => f.write_u64::<LittleEndian>(0)?, // clamp to the epoch
+            Err(_) => f.write_u64::<LittleEndian>(0)?, // clamp to the epoch
             Ok(x)  => f.write_u64::<LittleEndian>(x.as_secs())?
         }
         match self.atime.duration_since(time::UNIX_EPOCH) {
-            Err(e) => f.write_u64::<LittleEndian>(0)?, // clamp to the epoch
+            Err(_) => f.write_u64::<LittleEndian>(0)?, // clamp to the epoch
             Ok(x)  => f.write_u64::<LittleEndian>(x.as_secs())?
         }
         match self.ctime.duration_since(time::UNIX_EPOCH) {
-            Err(e) => f.write_u64::<LittleEndian>(0)?, // clamp to the epoch
+            Err(_) => f.write_u64::<LittleEndian>(0)?, // clamp to the epoch
             Ok(x)  => f.write_u64::<LittleEndian>(x.as_secs())?
         }
 
@@ -163,6 +163,7 @@ impl MetaObject {
         Ok(buf)
     }
 
+    #[allow(dead_code)]
     /// Utility function to generate a new file object
     /// 
     /// Fills in the creation time field with the current time
@@ -177,6 +178,7 @@ impl MetaObject {
             body: data.into_iter().collect() })
     }
 
+    #[allow(dead_code)]
     /// Utility function to generate a new tree object
     /// 
     /// Fills in the creation time field with the current time
@@ -191,6 +193,7 @@ impl MetaObject {
             children: children.into_iter().collect() })
     }
 
+    #[allow(dead_code)]
     /// Utility function to generate a new symlink object
     /// 
     /// Fills in the creation time field with the current time
@@ -214,8 +217,6 @@ impl MetaObject {
 
         // read type-specific bytes
         let content = match node_type {
-            _   => return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                             "Incorrect content format")),
             0u8 => { // version
                 let root = MetaObject::load_id(f)?;
                 let parent =
@@ -233,7 +234,7 @@ impl MetaObject {
                 let meta = FSMetadata::load(&mut f)?;
                 let num_children = f.read_u32::<LittleEndian>()?;
                 let mut children = Vec::with_capacity(num_children as usize);
-                for i in 0..num_children {
+                for _ in 0..num_children {
                     children.push(MetaObject::load_id(&mut f)?);
                 }
 
@@ -249,7 +250,7 @@ impl MetaObject {
                 let meta = FSMetadata::load(&mut f)?;
 
                 let tgtlen = f.read_u32::<LittleEndian>()?;
-                let mut tgt = vec![0u8; namelen as usize];
+                let mut tgt = vec![0u8; tgtlen as usize];
                 f.read_exact(&mut tgt)?;
 
                 MetaObject::Symlink(SymlinkObject {
@@ -265,7 +266,7 @@ impl MetaObject {
 
                 let num_chunks = f.read_u32::<LittleEndian>()?;
                 let mut chunks = Vec::with_capacity(num_chunks as usize);
-                for i in 0..num_chunks {
+                for _ in 0..num_chunks {
                     chunks.push(MetaObject::load_id(&mut f)?);
                 }
 
@@ -273,6 +274,8 @@ impl MetaObject {
                     create_time: created_time,
                     name: name, meta: meta, body: chunks })
             },
+            _   => return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                             "Incorrect content format")),
         };
 
         Ok(content)
@@ -280,7 +283,7 @@ impl MetaObject {
 
     fn write_time<W: Write>(f: &mut W, t: time::SystemTime) -> io::Result<()> {
         match t.duration_since(time::UNIX_EPOCH) {
-            Err(e) => f.write_u64::<LittleEndian>(0), // clamp to the epoch
+            Err(_) => f.write_u64::<LittleEndian>(0), // clamp to the epoch
             Ok(x)  => f.write_u64::<LittleEndian>(x.as_secs())
         }
     }
@@ -306,7 +309,7 @@ impl MetaObject {
                 f.write(&tree.name)?;
                 tree.meta.save(&mut f)?;
 
-                f.write_u32::<LittleEndian>(tree.children.len() as u32);
+                f.write_u32::<LittleEndian>(tree.children.len() as u32)?;
                 for c in tree.children.iter() {
                     f.write(c)?;
                 }
@@ -318,7 +321,7 @@ impl MetaObject {
                 f.write(&file.name)?;
                 file.meta.save(&mut f)?;
 
-                f.write_u32::<LittleEndian>(file.body.len() as u32);
+                f.write_u32::<LittleEndian>(file.body.len() as u32)?;
                 for c in file.body.iter() {
                     f.write(c)?;
                 }

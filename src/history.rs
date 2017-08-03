@@ -7,12 +7,13 @@ use std::fs;
 use std::path::Path;
 use std::io::prelude::*;
 
+use util::Hasher;
 use chunking::Chunkable;
-use remote::{BackendError, MetadataStore, BlockStore,  Backend};
-use metadata::{ Snapshot,   TreeObject, FileObject, SymlinkObject, MetaObject,
-                FSMetadata, IdentityTag};
+use remote::{BackendError, Backend};
+use metadata::{Snapshot,   MetaObject, IdentityTag};
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum Error {
     InvalidArgument,
     IntegrityError,
@@ -39,8 +40,8 @@ impl error::Error for Error {
             &Error::InvalidArgument=> "invalid argument",
             &Error::IntegrityError => "integrity error",
             &Error::NoValidSnapshot=> "no valid snapshot",
-            &Error::IOError(ref e) => "I/O error",
-            &Error::Backend(ref e) => "backend error",
+            &Error::IOError(_)     => "I/O error",
+            &Error::Backend(_)     => "backend error",
         }
     }
 }
@@ -80,15 +81,25 @@ impl<'a> History<'a> {
     // run integrity tests on a block
     fn check_block(&mut self, mode: IntegrityTestMode, tag: &IdentityTag)
             -> Result<bool> {
-        //let mut data = self.backend.read_block(tag)?;
-        self.backend.read_block(tag)?;
+        let data = self.backend.read_block(tag)?;
+
+        // check the hash if needed
+        if mode.check_hashes() {
+            let mut v = Vec::new();
+            let mut writer = Hasher::sha256(&mut v);
+            writer.write_all(&data)?;
+            let r = writer.finish();
+            if r.as_ref() != tag {
+                return Ok(false);
+            }
+        }
         Ok(true)
     }
 
     // run integrity tests on a file
     fn check_file(&mut self, mode: IntegrityTestMode, tag: &IdentityTag)
             -> Result<bool> {
-        let mut obj = self.backend.read_meta(tag)?;
+        let obj = self.backend.read_meta(tag)?;
         match obj {
             MetaObject::File(file) => {
                 for blk in file.body.iter() {
@@ -106,7 +117,7 @@ impl<'a> History<'a> {
     // run integrity tests on a filesystem tree
     fn check_tree(&mut self, mode: IntegrityTestMode, tag: &IdentityTag)
             -> Result<bool> {
-        let mut obj = self.backend.read_meta(tag)?;
+        let obj = self.backend.read_meta(tag)?;
         if let MetaObject::Tree(tree) = obj {
             for c in tree.children.iter() {
                 if !self.check_file(mode, c)? {
@@ -146,6 +157,7 @@ impl<'a> History<'a> {
         Ok(true)
     }
 
+    #[allow(dead_code)]
     /// Retrieve the most recent snapshot, if any
     pub fn get_snapshot(&mut self) -> Result<Option<Snapshot>> {
         let snapshot = self.backend.get_head()?;
@@ -161,6 +173,7 @@ impl<'a> History<'a> {
         }
     }
 
+    #[allow(dead_code)]
     /// Try to retrieve the given path from the latest snapshot
     /// 
     /// If no snapshots are stored or the object doesn't exist, this will return
@@ -169,6 +182,7 @@ impl<'a> History<'a> {
         unimplemented!()
     }
 
+    #[allow(dead_code)]
     /// Create a file, tree, or symlink object from a path on disk.
     /// 
     /// The given path should be canonical.
@@ -181,7 +195,7 @@ impl<'a> History<'a> {
         
         if ftype.is_file() {
             // break it into chunks and store them
-            let mut f = fs::OpenOptions::new()
+            let f = fs::OpenOptions::new()
                             .read(true)
                             .open(path)?;
             let mut blocks = Vec::new();

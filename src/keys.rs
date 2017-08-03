@@ -3,7 +3,6 @@ extern crate rpassword;
 extern crate interfaces;
 extern crate byteorder;
 
-use untrusted;
 use self::byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 use std::io::{Read,Write};
 
@@ -24,6 +23,7 @@ static DIGEST_ALG: &'static ring::digest::Algorithm = &ring::digest::SHA256;
 const KEY_FMT_VERSION: u16 = 1;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum Error {
     PasswordError,
     InvalidKeystore,
@@ -43,7 +43,7 @@ impl fmt::Display for Error {
             &Error::NotFound         => write!(f, "Not found"),
             &Error::WrongFormat      => write!(f, "Wrong format"),
             &Error::IOError(ref e)   => {
-                write!(f, "I/O Error: ");
+                write!(f, "I/O Error: ")?;
                 e.fmt(f)
             },
             &Error::Unsupported      => write!(f, "Unsupported operation")
@@ -59,7 +59,7 @@ impl error::Error for Error {
             &Error::CryptoError      => "Cryptographic error",
             &Error::NotFound         => "Not found",
             &Error::WrongFormat      => "Wrong format",
-            &Error::IOError(ref e)   => "I/O error",
+            &Error::IOError(_)       => "I/O error",
             &Error::Unsupported      => "Unsupported operation",
         }
     }
@@ -70,7 +70,7 @@ impl From<io::Error> for Error {
 }
 
 impl From<interfaces::InterfacesError> for Error {
-    fn from(e: interfaces::InterfacesError) -> Error { Error::Unsupported }
+    fn from(_: interfaces::InterfacesError) -> Error { Error::Unsupported }
 }
 
 /// Find the lowest-numbered MAC address of a local network interface
@@ -100,7 +100,7 @@ fn decrypt_inplace(key: &[u8; AEAD_KEY_LENGTH],
                                           key).unwrap();
 
     // pull the top 12 bytes of nonce out
-    let (mut nonce, mut body) = data.split_at_mut(12);
+    let (nonce, mut body) = data.split_at_mut(12);
     if nonce.len() < 12 {
         return Err(Error::CryptoError);
     }
@@ -136,7 +136,7 @@ fn gen_nonce() -> Result<[u8; 12], Error> {
     // generate nonce
     let mac: [u8; 6] = find_mac_addr()?;
     let mut nonce: [u8; 12] = [0u8; 12];
-    SystemRandom::new().fill(&mut nonce);
+    SystemRandom::new().fill(&mut nonce).map_err(|_| Error::CryptoError)?;
     for i in 0..6 { nonce[i] = mac[i]; }
 
     Ok(nonce)
@@ -145,7 +145,7 @@ fn gen_nonce() -> Result<[u8; 12], Error> {
 /// Encrypt the data block in place
 fn encrypt_inplace(key: &[u8; AEAD_KEY_LENGTH],
                    name: &str,
-                   mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+                   data: Vec<u8>) -> Result<Vec<u8>, Error> {
     let nonce = gen_nonce()?;
 
     // insert the nonce at the beginning of the output
@@ -181,12 +181,12 @@ pub struct DataKey {
 
 impl MetaKey {
     /// Decrypt the data block
-    pub fn decrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+    pub fn decrypt(&self, data: Vec<u8>) -> Result<Vec<u8>, Error> {
         decrypt_inplace(&self.data, "meta", data)
     }
 
     /// Encrypt the data block
-    pub fn encrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+    pub fn encrypt(&self, data: Vec<u8>) -> Result<Vec<u8>, Error> {
         encrypt_inplace(&self.data, "meta", data)
     }
 
@@ -202,13 +202,14 @@ impl MetaKey {
 
         // encrypt the key and write the nonce into the file
         let nonce = gen_nonce()?;
-        s.write_all(&nonce);
+        s.write_all(&nonce)?;
         let enc = ks.encrypt_master(vkey, &nonce)?;
         s.write_all(&enc)?;
 
         Ok(())
     }
 
+    #[allow(dead_code)]
     /// Read a securely-encoded key from a target stream and verify it
     pub fn read<R: ReadBytesExt>(ks: &Keystore,
                                  s: &mut R) -> Result<MetaKey, Error> {
@@ -219,11 +220,11 @@ impl MetaKey {
 
         // read the nonce
         let mut nonce = [0u8; 12];
-        s.read_exact(&mut nonce);
+        s.read_exact(&mut nonce)?;
 
         // read the rest of the decrypted data
         let mut crypted = Vec::new();
-        s.read_to_end(&mut crypted);
+        s.read_to_end(&mut crypted)?;
 
         // decrypt it
         let mut data = io::Cursor::new(ks.decrypt_master(crypted, &nonce)?);
@@ -236,12 +237,12 @@ impl MetaKey {
 
 impl DataKey {
     /// Decrypt the data block
-    pub fn decrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+    pub fn decrypt(&self, data: Vec<u8>) -> Result<Vec<u8>, Error> {
         decrypt_inplace(&self.data, "data", data)
     }
 
     /// Encrypt the data block
-    pub fn encrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
+    pub fn encrypt(&self, data: Vec<u8>) -> Result<Vec<u8>, Error> {
         encrypt_inplace(&self.data, "data", data)
     }
 
@@ -257,7 +258,7 @@ impl DataKey {
 
         // encrypt the key and write the nonce into the file
         let nonce = gen_nonce()?;
-        s.write_all(&nonce);
+        s.write_all(&nonce)?;
         let enc = ks.encrypt_master(vkey, &nonce)?;
         s.write_all(&enc)?;
 
@@ -274,11 +275,11 @@ impl DataKey {
 
         // read the nonce
         let mut nonce = [0u8; 12];
-        s.read_exact(&mut nonce);
+        s.read_exact(&mut nonce)?;
 
         // read the rest of the decrypted data
         let mut crypted = Vec::new();
-        s.read_to_end(&mut crypted);
+        s.read_to_end(&mut crypted)?;
 
         // decrypt it
         let mut data = io::Cursor::new(ks.decrypt_master(crypted, &nonce)?);
@@ -359,14 +360,14 @@ impl Keystore {
         let passwd = prompt_password_stderr("New keystore password: ")?;
         let passwd_conf = prompt_password_stderr("Confirm keystore password: ")?;
         if passwd != passwd_conf {
-            writeln!(io::stderr(), "Error: passwords do not match");
+            writeln!(io::stderr(), "Error: passwords do not match")?;
             return Err(Error::PasswordError);
         }
 
         // derive a key from the master password
         let mut buf = [0u8; ring::digest::SHA256_OUTPUT_LEN];
         let mut salt = [0u8; SALT_LENGTH];
-        SystemRandom::new().fill(&mut salt);
+        SystemRandom::new().fill(&mut salt).map_err(|_| Error::CryptoError)?;
         ring::pbkdf2::derive(DIGEST_ALG, PBKDF2_ITERATIONS, &salt,
                              passwd.as_bytes(), &mut buf);
 
@@ -374,8 +375,8 @@ impl Keystore {
         {
             let meta_path = p.join("mkey_salt");
             let mut outf = fs::File::create(&meta_path)?;
-            outf.write(&salt);
-            outf.sync_all();
+            outf.write(&salt)?;
+            outf.sync_all()?;
         }
 
         // write a hash of the password for verification
@@ -383,15 +384,15 @@ impl Keystore {
         {
             let meta_path = p.join("mkey_hash");
             let mut outf = fs::File::create(&meta_path)?;
-            outf.write(hash.as_ref());
-            outf.sync_all();
+            outf.write(hash.as_ref())?;
+            outf.sync_all()?;
         }
 
         {
             // generate a metadata key
-            let mut rand = SystemRandom::new();
             let mut metakey = [0u8; AEAD_KEY_LENGTH];
-            SystemRandom::new().fill(&mut metakey);
+            SystemRandom::new().fill(&mut metakey)
+                .map_err(|_| Error::CryptoError)?;
 
             // store the key on disk
             let keypath = p.join("metakey");
@@ -446,9 +447,7 @@ impl Keystore {
                                             &empty, // no additional data
                                             &mut data, tag_len);
         match res {
-            Ok(sz) => {
-                Ok(data)
-            },
+            Ok(_) => Ok(data),
             Err(_) => Err(Error::CryptoError)
         }
     }
@@ -471,20 +470,15 @@ impl Keystore {
                                             &empty, // no additional data
                                             &mut data, tag_len);
         match res {
-            Ok(sz) => {
-                Ok(data)
-            },
+            Ok(_) => Ok(data),
             Err(_) => Err(Error::CryptoError)
         }
     }
 
     /// Create a new data block key
     pub fn new_data_key(&mut self, remote: &str) -> Result<DataKey, Error> {
-        let mut rand = SystemRandom::new();
         let mut key = [0u8; AEAD_KEY_LENGTH];
-        SystemRandom::new().fill(&mut key);
-
-        let mut buf = [0u8; ring::digest::SHA256_OUTPUT_LEN];
+        SystemRandom::new().fill(&mut key).map_err(|_| Error::CryptoError)?;
 
         // store the key on disk
         let data_loc = self.loc.join("data");
