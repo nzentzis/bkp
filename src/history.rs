@@ -147,15 +147,15 @@ impl<'a> History<'a> {
     }
 
     /// Retrieve the most recent snapshot, if any
-    pub fn get_snapshot(&mut self) -> Result<Option<MetaObject>> {
+    pub fn get_snapshot(&mut self) -> Result<Option<Snapshot>> {
         let snapshot = self.backend.get_head()?;
         if snapshot.is_none() {
             return Ok(None);
         }
         let snapshot = snapshot.unwrap();
 
-        if let MetaObject::Snapshot(_) = snapshot {
-            Ok(Some(snapshot))
+        if let MetaObject::Snapshot(s) = snapshot {
+            Ok(Some(s))
         } else {
             Err(Error::NoValidSnapshot)
         }
