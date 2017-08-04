@@ -173,7 +173,7 @@ impl Backend {
 }
 
 impl MetadataStore for Backend {
-    fn list_meta(&mut self) -> BackendResult<Vec<IdentityTag>> {
+    fn list_meta(&self) -> BackendResult<Vec<IdentityTag>> {
         let sess = self.sess.lock().unwrap();
         let meta_path = self.root.join("metadata");
         let prefix_files = sess.readdir(&meta_path)?;
@@ -217,7 +217,7 @@ impl MetadataStore for Backend {
         Ok(result)
     }
 
-    fn read_meta(&mut self, ident: &IdentityTag) -> BackendResult<MetaObject> {
+    fn read_meta(&self, ident: &IdentityTag) -> BackendResult<MetaObject> {
         // generate the prefix and filename
         let prefix = format!("{:02x}", ident[0]);
         let name = ident.as_ref().to_hex();
@@ -268,7 +268,7 @@ impl MetadataStore for Backend {
         Ok(tag)
     }
 
-    fn get_head(&mut self) -> BackendResult<Option<MetaObject>> {
+    fn get_head(&self) -> BackendResult<Option<MetaObject>> {
         // generate a head path
         let mut path = self.root.join("heads");
         path.push(self.node.to_owned());
@@ -305,7 +305,7 @@ impl MetadataStore for Backend {
 }
 
 impl BlockStore for Backend {
-    fn read_block(&mut self, ident: &IdentityTag) -> BackendResult<Vec<u8>> {
+    fn read_block(&self, ident: &IdentityTag) -> BackendResult<Vec<u8>> {
         // generate the prefix and filename
         let prefix = format!("{:02x}", ident[0]);
         let name = ident.as_ref().to_hex();

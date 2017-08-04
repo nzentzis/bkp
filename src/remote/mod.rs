@@ -86,16 +86,16 @@ pub type BackendResult<T> = Result<T, BackendError>;
 /// Trait for everything that stores metadata
 pub trait MetadataStore {
     /// List available metadata object IDs
-    fn list_meta(&mut self) -> BackendResult<Vec<IdentityTag>>;
+    fn list_meta(&self) -> BackendResult<Vec<IdentityTag>>;
     
     /// Try to read a metadata object by ID
-    fn read_meta(&mut self, ident: &IdentityTag) -> BackendResult<MetaObject>;
+    fn read_meta(&self, ident: &IdentityTag) -> BackendResult<MetaObject>;
 
     /// Try to read a metadata object by ID
     fn write_meta(&mut self, obj: &MetaObject) -> BackendResult<IdentityTag>;
 
     /// Read the current head, if one exists
-    fn get_head(&mut self) -> BackendResult<Option<MetaObject>>;
+    fn get_head(&self) -> BackendResult<Option<MetaObject>>;
 
     /// Set the current head to a given tag
     fn set_head(&mut self, tag: &IdentityTag) -> BackendResult<()>;
@@ -104,7 +104,7 @@ pub trait MetadataStore {
 /// Trait for everything that stores data blocks
 pub trait BlockStore {
     /// Read a block from the remote by its identity tag
-    fn read_block(&mut self, ident: &IdentityTag) -> BackendResult<Vec<u8>>;
+    fn read_block(&self, ident: &IdentityTag) -> BackendResult<Vec<u8>>;
 
     /// Write a given block of data to the remote
     fn write_block(&mut self, data: &[u8]) -> BackendResult<IdentityTag>;
