@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use metadata::byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
-use util::Hasher;
+use util::{Hasher, DevNull};
 
 pub const IDENTITY_LEN: usize = ring::digest::SHA256_OUTPUT_LEN;
 pub type IdentityTag = [u8; IDENTITY_LEN];
@@ -89,6 +89,7 @@ impl IntoFSMetadata for fs::Metadata {
 }
 
 /// A single logical snapshot of a coherent filesystem state
+#[derive(Clone)]
 pub struct Snapshot {
     /// The object's creation time. Note that this applies to the *object*, not
     /// any files or trees that it contains.
@@ -102,6 +103,7 @@ pub struct Snapshot {
 }
 
 /// A logical snapshot of a filesystem tree
+#[derive(Clone)]
 pub struct TreeObject {
     /// The object's creation time. Note that this applies to the *object*, not
     /// any files or trees that it contains.
@@ -118,6 +120,7 @@ pub struct TreeObject {
 }
 
 /// Data about the contents of a given file and the blocks that make it up
+#[derive(Clone)]
 pub struct FileObject {
     /// The object's creation time. Note that this applies to the *object*, not
     /// any files or trees that it contains.
@@ -134,6 +137,7 @@ pub struct FileObject {
 }
 
 /// Data about a symbolic link
+#[derive(Clone)]
 pub struct SymlinkObject {
     /// The object's creation time. Note that this applies to the *object*, not
     /// any files or trees that it contains.
@@ -161,6 +165,13 @@ impl MetaObject {
         let mut buf = [0u8; IDENTITY_LEN];
         f.read_exact(&mut buf)?;
         Ok(buf)
+    }
+
+    #[allow(dead_code)]
+    /// Compute the object's identity tag
+    pub fn ident(&self) -> IdentityTag {
+        let mut dev = DevNull::new();
+        self.save(&mut dev).unwrap()
     }
 
     #[allow(dead_code)]
@@ -206,6 +217,16 @@ impl MetaObject {
                 name: name.as_ref().to_owned().into_vec(),
                 meta: meta.into_metadata(),
                 target: tgt.as_ref().to_owned().into_vec() })
+    }
+
+    #[allow(dead_code)]
+    /// Utility function to generate a new snapshot object
+    /// 
+    /// Fills in the creation time field with the current time
+    pub fn snapshot(root: IdentityTag, parent: Option<IdentityTag>) -> Self {
+        MetaObject::Snapshot(Snapshot {
+                create_time: time::SystemTime::now(),
+                root: root, parent: parent})
     }
 
     /// Read a serialized meta object from the passed stream

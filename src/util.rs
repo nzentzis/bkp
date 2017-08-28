@@ -56,6 +56,18 @@ impl<'a, W: Write> Write for Hasher<'a, W> {
     fn flush(&mut self) -> io::Result<()> { self.strm.flush() }
 }
 
+/// A dummy object which implements Write but discards the written data
+pub struct DevNull {}
+
+impl DevNull {
+    pub fn new() -> DevNull { DevNull {} }
+}
+
+impl Write for DevNull {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
 #[test]
 fn tohex_test() { // make sure the ToHex trait works properly
     let v: Vec<u8> = vec![1,2,3,4,5,6,250,251,252,253];
