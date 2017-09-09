@@ -4,7 +4,6 @@ In order to support both cross-machine deduplication and logically isolate the
 backup trees of each client system, bkp stores filesystem metadata separately
 from the actual file content chunks. This metadata is organized into *objects*,
 each of which is identified by the 256-bit SHA256 hash of its encoded contents.
-All metadata objects contain the Unix time in seconds when they were created.
 
 The top-level FS metadata object is the *snapshot*. Snapshots represent a
 coherent picture of the client's filesystem state. While different pieces of the
@@ -59,8 +58,8 @@ all fields are little-endian unless otherwise specified.
     }
 
     struct version_object {
-        u64 create_time
         u8  obj_type_id = 0
+        u64 create_time
 
         obj_tag root;
 
@@ -71,7 +70,6 @@ all fields are little-endian unless otherwise specified.
     }
 
     struct tree_object {
-        u64 create_time
         u8  obj_type_id = 1
 
         u16 name_len
@@ -84,7 +82,6 @@ all fields are little-endian unless otherwise specified.
     }
 
     struct symlink_object {
-        u64 create_time
         u8  obj_type_id = 2
 
         u16 name_len
@@ -97,7 +94,6 @@ all fields are little-endian unless otherwise specified.
     }
 
     struct file_object {
-        u64 create_time
         u8  obj_type_id = 3
 
         u16 name_len

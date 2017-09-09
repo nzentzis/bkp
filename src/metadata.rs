@@ -105,10 +105,6 @@ pub struct Snapshot {
 /// A logical snapshot of a filesystem tree
 #[derive(Clone)]
 pub struct TreeObject {
-    /// The object's creation time. Note that this applies to the *object*, not
-    /// any files or trees that it contains.
-    pub create_time: time::SystemTime,
-
     /// filesystem name as a byte string
     pub name: Vec<u8>,
 
@@ -122,10 +118,6 @@ pub struct TreeObject {
 /// Data about the contents of a given file and the blocks that make it up
 #[derive(Clone)]
 pub struct FileObject {
-    /// The object's creation time. Note that this applies to the *object*, not
-    /// any files or trees that it contains.
-    pub create_time: time::SystemTime,
-
     /// filesystem name as a byte string
     pub name: Vec<u8>,
 
@@ -139,10 +131,6 @@ pub struct FileObject {
 /// Data about a symbolic link
 #[derive(Clone)]
 pub struct SymlinkObject {
-    /// The object's creation time. Note that this applies to the *object*, not
-    /// any files or trees that it contains.
-    pub create_time: time::SystemTime,
-
     /// filesystem name as a byte string
     pub name: Vec<u8>,
 
@@ -176,14 +164,11 @@ impl MetaObject {
 
     #[allow(dead_code)]
     /// Utility function to generate a new file object
-    /// 
-    /// Fills in the creation time field with the current time
     pub fn file<S, M, I>(name: &S, meta: M, data: I) -> Self
         where S: AsRef<OsStr> + ?Sized,
               M: IntoFSMetadata,
               I: IntoIterator<Item=IdentityTag> {
         MetaObject::File(FileObject {
-            create_time: time::SystemTime::now(),
             name: name.as_ref().to_owned().into_vec(),
             meta: meta.into_metadata(),
             body: data.into_iter().collect() })
@@ -191,14 +176,11 @@ impl MetaObject {
 
     #[allow(dead_code)]
     /// Utility function to generate a new tree object
-    /// 
-    /// Fills in the creation time field with the current time
     pub fn tree<S, M, I>(name: &S, meta: M, children: I) -> Self
         where S: AsRef<OsStr> + ?Sized,
               M: IntoFSMetadata,
               I: IntoIterator<Item=IdentityTag> {
         MetaObject::Tree(TreeObject {
-            create_time: time::SystemTime::now(),
             name: name.as_ref().to_owned().into_vec(),
             meta: meta.into_metadata(),
             children: children.into_iter().collect() })
@@ -206,14 +188,11 @@ impl MetaObject {
 
     #[allow(dead_code)]
     /// Utility function to generate a new symlink object
-    /// 
-    /// Fills in the creation time field with the current time
     pub fn symlink<S, M, T>(name: &S, meta: M, tgt: &T) -> Self
         where S: AsRef<OsStr> + ?Sized,
               T: AsRef<OsStr> + ?Sized,
               M: IntoFSMetadata {
         MetaObject::Symlink(SymlinkObject {
-                create_time: time::SystemTime::now(),
                 name: name.as_ref().to_owned().into_vec(),
                 meta: meta.into_metadata(),
                 target: tgt.as_ref().to_owned().into_vec() })
@@ -232,13 +211,13 @@ impl MetaObject {
     /// Read a serialized meta object from the passed stream
     pub fn load<R: Read>(mut f: &mut R) -> io::Result<MetaObject> {
         // read required prefix bytes
-        let created_time = time::UNIX_EPOCH +
-            time::Duration::from_secs(f.read_u64::<LittleEndian>()?);
         let node_type = f.read_u8()?;
 
         // read type-specific bytes
         let content = match node_type {
             0u8 => { // version
+                let created_time = time::UNIX_EPOCH +
+                    time::Duration::from_secs(f.read_u64::<LittleEndian>()?);
                 let root = MetaObject::load_id(f)?;
                 let parent =
                     if f.read_u8()? != 0 { Some(MetaObject::load_id(f)?) }
@@ -260,7 +239,6 @@ impl MetaObject {
                 }
 
                 MetaObject::Tree(TreeObject {
-                    create_time: created_time,
                     name: name, meta: meta, children: children })
             },
             2u8 => { // symlink
@@ -275,7 +253,6 @@ impl MetaObject {
                 f.read_exact(&mut tgt)?;
 
                 MetaObject::Symlink(SymlinkObject {
-                    create_time: created_time,
                     name: name, meta: meta, target: tgt })
             },
             3u8 => { // file
@@ -292,7 +269,6 @@ impl MetaObject {
                 }
 
                 MetaObject::File(FileObject {
-                    create_time: created_time,
                     name: name, meta: meta, body: chunks })
             },
             _   => return Err(io::Error::new(io::ErrorKind::InvalidData,
@@ -316,15 +292,14 @@ impl MetaObject {
 
         match self {
             &MetaObject::Snapshot(ref snap) => {
-                MetaObject::write_time(&mut f, snap.create_time)?;
                 f.write_u8(0u8)?;
+                MetaObject::write_time(&mut f, snap.create_time)?;
                 f.write(&snap.root)?;
                 if let Some(p) = snap.parent {
                     f.write(&p)?;
                 }
             },
             &MetaObject::Tree(ref tree) => {
-                MetaObject::write_time(&mut f, tree.create_time)?;
                 f.write_u8(1u8)?;
                 f.write_u16::<LittleEndian>(tree.name.len() as u16)?;
                 f.write(&tree.name)?;
@@ -336,7 +311,6 @@ impl MetaObject {
                 }
             },
             &MetaObject::File(ref file) => {
-                MetaObject::write_time(&mut f, file.create_time)?;
                 f.write_u8(3u8)?;
                 f.write_u16::<LittleEndian>(file.name.len() as u16)?;
                 f.write(&file.name)?;
@@ -348,7 +322,6 @@ impl MetaObject {
                 }
             },
             &MetaObject::Symlink(ref link) => {
-                MetaObject::write_time(&mut f, link.create_time)?;
                 f.write_u8(2u8)?;
                 f.write_u16::<LittleEndian>(link.name.len() as u16)?;
                 f.write(&link.name)?;
