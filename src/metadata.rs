@@ -27,7 +27,7 @@ pub fn tag_from_digest(d: ring::digest::Digest) -> IdentityTag {
     r
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct FSMetadata {
     /// Modification time
     pub mtime: time::SystemTime,
@@ -50,7 +50,7 @@ impl FSMetadata {
             time::Duration::from_secs(f.read_u64::<LittleEndian>()?);
         let ct = time::UNIX_EPOCH +
             time::Duration::from_secs(f.read_u64::<LittleEndian>()?);
-        let mode = f.read_u32::<LittleEndian>()?;
+        let mode = f.read_u16::<LittleEndian>()? as u32;
 
         Ok(FSMetadata { mtime: mt, atime: at, ctime: ct, mode: mode })
     }
@@ -88,8 +88,12 @@ impl IntoFSMetadata for fs::Metadata {
     }
 }
 
+impl IntoFSMetadata for FSMetadata {
+    fn into_metadata(self) -> FSMetadata { self }
+}
+
 /// A single logical snapshot of a coherent filesystem state
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Snapshot {
     /// The object's creation time. Note that this applies to the *object*, not
     /// any files or trees that it contains.
@@ -103,7 +107,7 @@ pub struct Snapshot {
 }
 
 /// A logical snapshot of a filesystem tree
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TreeObject {
     /// filesystem name as a byte string
     pub name: Vec<u8>,
@@ -116,7 +120,7 @@ pub struct TreeObject {
 }
 
 /// Data about the contents of a given file and the blocks that make it up
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FileObject {
     /// filesystem name as a byte string
     pub name: Vec<u8>,
@@ -129,7 +133,7 @@ pub struct FileObject {
 }
 
 /// Data about a symbolic link
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SymlinkObject {
     /// filesystem name as a byte string
     pub name: Vec<u8>,
@@ -141,6 +145,7 @@ pub struct SymlinkObject {
     pub target: Vec<u8>
 }
 
+#[derive(PartialEq, Eq, Debug)]
 pub enum MetaObject {
     Snapshot(Snapshot),
     Tree(TreeObject),
@@ -334,5 +339,54 @@ impl MetaObject {
 
         let id = tag_from_digest(f.finish());
         Ok(id)
+    }
+}
+
+mod tests {
+    use metadata::*;
+    use std::io::Cursor;
+
+    fn check_roundtrip(m: MetaObject) {
+        let mut v = Vec::new();
+        m.save(&mut v).unwrap();
+        let m2 = MetaObject::load(&mut Cursor::new(v)).unwrap();
+
+        assert_eq!(m2, m);
+    }
+
+    #[test]
+    fn roundtrip_test() {
+        check_roundtrip(MetaObject::file(
+                "test1",
+                FSMetadata {
+                    mtime: time::UNIX_EPOCH + time::Duration::from_secs(12345),
+                    atime: time::UNIX_EPOCH + time::Duration::from_secs(23456),
+                    ctime: time::UNIX_EPOCH + time::Duration::from_secs(34567),
+                    mode: 12345
+                },
+                vec![]
+        ));
+        check_roundtrip(MetaObject::file(
+                "test2",
+                FSMetadata {
+                    mtime: time::UNIX_EPOCH + time::Duration::from_secs(12345),
+                    atime: time::UNIX_EPOCH + time::Duration::from_secs(23456),
+                    ctime: time::UNIX_EPOCH + time::Duration::from_secs(34567),
+                    mode: 12345
+                },
+                vec![b"012345678901234567890123456789ab".to_owned(),
+                     b"012345678901234567890123456789ab".to_owned(),
+                     b"012345678901234567890123456789ab".to_owned()]
+        ));
+        check_roundtrip(MetaObject::file(
+                "test3",
+                FSMetadata {
+                    mtime: time::UNIX_EPOCH + time::Duration::from_secs(12345),
+                    atime: time::UNIX_EPOCH + time::Duration::from_secs(23456),
+                    ctime: time::UNIX_EPOCH + time::Duration::from_secs(34567),
+                    mode: 12345
+                },
+                vec![b"012345678901234567890123456789ab".to_owned()]
+        ));
     }
 }
