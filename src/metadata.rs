@@ -35,9 +35,6 @@ pub struct FSMetadata {
     /// Access time
     pub atime: time::SystemTime,
 
-    /// Creation time
-    pub ctime: time::SystemTime,
-
     /// UNIX mode bits
     pub mode: u32,
 }
@@ -48,11 +45,9 @@ impl FSMetadata {
             time::Duration::from_secs(f.read_u64::<LittleEndian>()?);
         let at = time::UNIX_EPOCH +
             time::Duration::from_secs(f.read_u64::<LittleEndian>()?);
-        let ct = time::UNIX_EPOCH +
-            time::Duration::from_secs(f.read_u64::<LittleEndian>()?);
         let mode = f.read_u16::<LittleEndian>()? as u32;
 
-        Ok(FSMetadata { mtime: mt, atime: at, ctime: ct, mode: mode })
+        Ok(FSMetadata { mtime: mt, atime: at, mode: mode })
     }
 
     fn save<W: Write>(&self, f: &mut W) -> io::Result<()> {
@@ -61,10 +56,6 @@ impl FSMetadata {
             Ok(x)  => f.write_u64::<LittleEndian>(x.as_secs())?
         }
         match self.atime.duration_since(time::UNIX_EPOCH) {
-            Err(_) => f.write_u64::<LittleEndian>(0)?, // clamp to the epoch
-            Ok(x)  => f.write_u64::<LittleEndian>(x.as_secs())?
-        }
-        match self.ctime.duration_since(time::UNIX_EPOCH) {
             Err(_) => f.write_u64::<LittleEndian>(0)?, // clamp to the epoch
             Ok(x)  => f.write_u64::<LittleEndian>(x.as_secs())?
         }
@@ -82,7 +73,6 @@ impl IntoFSMetadata for fs::Metadata {
         FSMetadata {
             mtime: self.modified().unwrap(),
             atime: self.accessed().unwrap(),
-            ctime: self.created().unwrap(),
             mode: self.mode()
         }
     }
@@ -370,7 +360,6 @@ mod tests {
                 FSMetadata {
                     mtime: time::UNIX_EPOCH + time::Duration::from_secs(12345),
                     atime: time::UNIX_EPOCH + time::Duration::from_secs(23456),
-                    ctime: time::UNIX_EPOCH + time::Duration::from_secs(34567),
                     mode: 12345
                 },
                 vec![]
@@ -380,7 +369,6 @@ mod tests {
                 FSMetadata {
                     mtime: time::UNIX_EPOCH + time::Duration::from_secs(12345),
                     atime: time::UNIX_EPOCH + time::Duration::from_secs(23456),
-                    ctime: time::UNIX_EPOCH + time::Duration::from_secs(34567),
                     mode: 12345
                 },
                 vec![b"012345678901234567890123456789ab".to_owned(),
@@ -392,7 +380,6 @@ mod tests {
                 FSMetadata {
                     mtime: time::UNIX_EPOCH + time::Duration::from_secs(12345),
                     atime: time::UNIX_EPOCH + time::Duration::from_secs(23456),
-                    ctime: time::UNIX_EPOCH + time::Duration::from_secs(34567),
                     mode: 12345
                 },
                 vec![b"012345678901234567890123456789ab".to_owned()]

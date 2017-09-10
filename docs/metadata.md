@@ -38,7 +38,6 @@ all fields are little-endian unless otherwise specified.
     struct fs_metadata {
         u64 mtime // unix time
         u64 atime
-        u64 ctime
 
         // unix mode bits
         bitfield(u16) mode {
