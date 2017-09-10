@@ -77,7 +77,8 @@ pub struct Backend {
 
 impl From<self::ssh2::Error> for BackendError {
     fn from(e: self::ssh2::Error) -> BackendError {
-        BackendError::BackendError(format!("libssh2 failure {}", e))
+        BackendError::BackendError(
+            format!("libssh2 error ({}): {}", e.code(), e.message()))
     }
 }
 
@@ -158,9 +159,18 @@ impl Backend {
     fn lock(&mut self) -> Result<(), BackendError> {
         let lock_path = self.root.join("bkp.lock");
         let sess = self.sess.lock().unwrap();
-        sess.open_mode(&lock_path, self::ssh2::CREATE,
-                       PERM_0755, self::ssh2::OpenType::File)?;
-        Ok(())
+        let r = if let Err(e) = sess.open_mode(&lock_path,
+                                       self::ssh2::CREATE,
+                                       PERM_0755,
+                                       self::ssh2::OpenType::File) {
+            let e_code = e.code();
+            let e_msg = e.message();
+            Err(BackendError::BackendError(
+                format!("unable to lock ({}) - {}", e_code, e_msg)))
+        } else {
+            Ok(())
+        };
+        r
     }
 
     /// Release an atomic lock on the target

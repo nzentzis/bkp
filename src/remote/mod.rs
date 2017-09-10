@@ -51,7 +51,7 @@ impl fmt::Display for BackendError {
             &BackendError::IOError(ref e)   =>
                 write!(f, "I/O error: {}", e),
             &BackendError::BackendError(ref e)   =>
-                write!(f, "backend error: {}", e),
+                write!(f, "{}", e),
             &BackendError::KeyError(ref e) =>
                 write!(f, "keystore error: {}", e),
         }
