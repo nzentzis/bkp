@@ -5,7 +5,7 @@ use std::time;
 use std::fs;
 use std::io;
 use std::io::prelude::*;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use metadata::byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
@@ -211,6 +211,15 @@ impl MetaObject {
         MetaObject::Snapshot(Snapshot {
                 create_time: time::SystemTime::now(),
                 root: root, parent: parent})
+    }
+
+    pub fn name(&self) -> Option<OsString> {
+        match self {
+            &MetaObject::Snapshot(_) => None,
+            &MetaObject::Tree(ref t) => Some(OsString::from_vec(t.name.clone())),
+            &MetaObject::File(ref f) => Some(OsString::from_vec(f.name.clone())),
+            &MetaObject::Symlink(ref l) => Some(OsString::from_vec(l.name.clone())),
+        }
     }
 
     /// Read a serialized meta object from the passed stream
