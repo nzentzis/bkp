@@ -355,7 +355,7 @@ impl BlockStore for Backend {
         if sess.stat(&path).is_ok() { return Ok(tag); }
 
         // actually write it
-        let mut f = sess.open(&path)?;
+        let mut f = sess.create(&path)?;
         f.write_all(&encrypted)?;
         Ok(tag)
     }
