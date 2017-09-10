@@ -5,12 +5,15 @@ use std::fmt;
 use std::io;
 use std::fs;
 use std::path::Path;
+use std::ffi::{OsStr, OsString};
 use std::io::prelude::*;
+use std::ops::Deref;
+use std::os::unix::ffi::OsStringExt;
 
 use util::Hasher;
 use chunking::Chunkable;
-use remote::{BackendError, Backend};
-use metadata::{Snapshot,   MetaObject, IdentityTag};
+use remote::{BackendResult, BackendError, Backend};
+use metadata::{Snapshot, FileObject, SymlinkObject, MetaObject, IdentityTag, TreeObject};
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -65,6 +68,113 @@ pub enum IntegrityTestMode {
 
 impl IntegrityTestMode {
     fn check_hashes(&self) -> bool { *self == IntegrityTestMode::Exhaustive }
+}
+
+/// A struct which wraps metadata objects and associates them with a containing
+/// backend object.
+pub struct ContextWrapper<'a, T> {
+    backend: &'a Box<Backend>,
+    object: T
+}
+
+impl<'a, T> ContextWrapper<'a, T> {
+    fn new(backend: &'a Box<Backend>, obj: T) -> Self {
+        ContextWrapper { backend: backend, object: obj }
+    }
+
+    fn child<C>(&self, obj: C) -> ContextWrapper<'a, C> {
+        ContextWrapper {
+            backend: self.backend,
+            object: obj
+        }
+    }
+}
+
+/// allow easy derefs of context wrapper objects
+impl<'a, T> Deref for ContextWrapper<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target { &self.object }
+}
+
+/// Context implementation for snapshots
+impl<'a> ContextWrapper<'a, Snapshot> {
+    /// Get the root tree inside this snapshot
+    pub fn get_tree(&self) -> Result<ContextWrapper<'a, TreeObject>> {
+        let obj = self.backend.read_meta(&self.root)?;
+        match obj {
+            MetaObject::Tree(t) => Ok(self.child(t)),
+            _                   => Err(Error::IntegrityError)
+        }
+    }
+}
+
+/// Context implementation for tree objects
+impl<'a> ContextWrapper<'a, TreeObject> {
+    /// Get the object's ID at a given path in this snapshot
+    pub fn get_id<P>(&self, pth: P) -> Result<Option<IdentityTag>>
+            where P: AsRef<Path> {
+        let mut node: TreeObject = self.object.clone();
+
+        // traverse path
+        for part in pth.as_ref().iter() {
+            let part_vec = part.to_owned().into_vec();
+
+            // retrieve children
+            let children: BackendResult<Vec<(IdentityTag,MetaObject)>> =
+                node.children.iter()
+                .map(|x| self.backend.read_meta(&x).map(|m| (x.clone(), m)))
+                .collect();
+            let children = children?;
+
+            let mut found = false;
+            for (ident,c) in children {
+                match c {
+                    MetaObject::Tree(t) => {
+                        if t.name == part_vec {
+                            node = t;
+                            found = true;
+                            break;
+                        }
+                    },
+                    MetaObject::File(f) => {
+                        if f.name == part_vec {
+                            return Ok(Some(ident));
+                        }
+                    },
+                    MetaObject::Symlink(ref f) if f.name == part_vec => {
+                        if f.name == part_vec {
+                            return Ok(Some(ident));
+                        }
+                    },
+                    _ => {
+                        // no other values are legal
+                        return Err(Error::IntegrityError);
+                    }
+                }
+            }
+
+            if !found {
+                return Ok(None);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Get the object at a given path in this snapshot, if any
+    pub fn get<P>(&self, pth: P) -> Result<Option<ContextWrapper<'a, MetaObject>>> 
+            where P: AsRef<Path> {
+        if let Some(ident) = self.get_id(pth)? {
+            Ok(Some(self.child(self.backend.read_meta(&ident)?)))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl<'a> ContextWrapper<'a, FileObject> {
+}
+
+impl<'a> ContextWrapper<'a, SymlinkObject> {
 }
 
 /// A wrapper struct to provide history access on top of a given backend
@@ -159,7 +269,7 @@ impl<'a> History<'a> {
 
     #[allow(dead_code)]
     /// Retrieve the most recent snapshot, if any
-    pub fn get_snapshot(&mut self) -> Result<Option<Snapshot>> {
+    pub fn get_snapshot(&self) -> Result<Option<Snapshot>> {
         let snapshot = self.backend.get_head()?;
         if snapshot.is_none() {
             return Ok(None);
@@ -174,24 +284,94 @@ impl<'a> History<'a> {
     }
 
     #[allow(dead_code)]
+    /// Creates a new snapshot with the given root tree
+    /// 
+    /// If a snapshot is already stored, then the resulting snapshot will use it
+    /// as its parent. Otherwise, the new snapshot will be an origin snapshot.
+    pub fn new_snapshot(&mut self, root: IdentityTag) -> Result<IdentityTag> {
+        let snap = self.get_snapshot()?;
+        let new_obj = MetaObject::snapshot(root,
+                                           snap.map(|o| MetaObject::Snapshot(o)
+                                                        .ident()));
+
+        // store it
+        let ident = self.backend.write_meta(&new_obj)?;
+
+        // and commit it by modifying the head pointer
+        self.backend.set_head(&ident)?;
+        Ok(ident)
+    }
+
+    #[allow(dead_code)]
     /// Try to retrieve the given path from the latest snapshot
     /// 
     /// If no snapshots are stored or the object doesn't exist, this will return
     /// `Ok(None)`.
-    pub fn get_path(&mut self, path: &Path) -> Result<Option<MetaObject>> {
-        unimplemented!()
+    pub fn get_path(&self, path: &Path) -> Result<Option<MetaObject>> {
+        use std::path::Component;
+
+        let snapshot = self.get_snapshot()?;
+
+        if snapshot.is_none() { return Ok(None); }
+        let snapshot = snapshot.unwrap();
+
+        let mut current = snapshot.root;
+        for comp in path.components() {
+            let cur_elem = self.backend.read_meta(&current)?;
+
+            // snapshots are never valid child targets
+            let tree = if let MetaObject::Tree(t) = cur_elem {
+                t
+            } else {
+                return Err(Error::IntegrityError);
+            };
+
+            // descend a level based on the component
+            match comp {
+                Component::Prefix(_) => unimplemented!(), // Windows only - don't care yet
+                Component::RootDir => {}, // skip, since we already start at /
+                Component::CurDir => panic!("retrieved path is not canonical"),
+                Component::ParentDir => panic!("retrieved path is not canonical"),
+                Component::Normal(cmp) => { // try to pull the item
+                    // retrieve the tree's children
+                    let children: Result<Vec<(IdentityTag, MetaObject)>> =
+                        tree.children.iter()
+                                     .map(|id| self.backend
+                                              .read_meta(&id)
+                                              .map_err(|e| Error::Backend(e))
+                                              .map(|r| (id.to_owned(), r)))
+                                     .collect();
+                    let children: Vec<(IdentityTag, MetaObject)> = children?;
+
+                    // try to find one matching the path component
+                    if let Some(itm) = children.into_iter()
+                                      .filter(|c| c.1.name() == Some(cmp.to_os_string()))
+                                      .map(|c| c.0)
+                                      .next() {
+                        current = itm;
+                    } else {
+                        // no item matching what the path specified
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+
+        Ok(Some(self.backend.read_meta(&current)?))
     }
 
     #[allow(dead_code)]
     /// Create a file, tree, or symlink object from a path on disk.
     /// 
     /// The given path should be canonical.
-    pub fn store_path(&mut self, path: &Path) -> Result<IdentityTag> {
+    fn store_path(&mut self, path: &Path) -> Result<IdentityTag> {
         let meta = fs::symlink_metadata(path)?;
         let ftype = meta.file_type();
         let fname = path.file_name().ok_or(Error::InvalidArgument)?;
 
         // TODO: checks here to avoid redundant stores
+        // this should check the mtime or hash of the files on disk against
+        // the mtime/hash of the most recent nodes in the tree
         
         if ftype.is_file() {
             // break it into chunks and store them
@@ -228,5 +408,106 @@ impl<'a> History<'a> {
         } else {
             unimplemented!()
         }
+    }
+
+    /// Build a new tree based on the previous root - start at `/` and move
+    /// down, inserting updated elements in the right positions along the way.
+    /// 
+    /// For each directory visited, this will choose whether to use the previous
+    /// stored tree (if no updated path is rooted there), use a path from the
+    /// input set, or use a new stored tree with recursively updated versions of
+    /// the tree's children.
+    fn update_tree<'b>(&mut self, root: &Path,
+                       new_vals: &Vec<(&'b Path, IdentityTag)>) ->
+            Result<IdentityTag> {
+        match new_vals.iter().find(|x| x.0 == root) {
+            Some(r) => Ok(r.1), // return the updated object
+            None => { // no override - look backwards
+                let old_version = self.get_path(root)
+                                      .and_then(|r| r.ok_or(Error::IntegrityError))?;
+
+                // check whether we actually need to store this - if nothing
+                // under it was changed, we can just re-use the old object
+                if new_vals.iter().any(|x| x.0.starts_with(root)) {
+                    // yep - build a new tree
+                    //
+                    // this involves iterating through the old tree's children
+                    // and recursively updating each, then generating a new tree
+                    // object with the updated children list
+                    if let MetaObject::Tree(mut t) = old_version {
+                        let mut new_children = Vec::new();
+                        for child in t.children.drain(..) {
+                            // grab a copy and pull out the path component
+                            let obj = self.backend.read_meta(&child)?;
+                            let name = OsString::from_vec(match obj {
+                                MetaObject::Snapshot(_) => {
+                                    // trees can't have snapshots as children
+                                    return Err(Error::IntegrityError);
+                                },
+                                MetaObject::Tree(t) => t.name,
+                                MetaObject::File(f) => f.name,
+                                MetaObject::Symlink(l) => l.name,
+                            });
+
+                            // build the new root path and update it
+                            let pth = root.join(&name);
+                            let new_id = self.update_tree(&pth, new_vals)?;
+                            new_children.push(new_id);
+                        }
+
+                        t.children = new_children;
+                        Ok(self.backend.write_meta(&MetaObject::Tree(t))?)
+                    } else {
+                        // to get here, one of the new paths must be rooted at
+                        // this node, but for a non-tree node that doesn't make
+                        // sense
+                        Err(Error::IntegrityError)
+                    }
+                } else {
+                    // no, reuse the old one
+                    Ok(old_version.ident())
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    /// Generate a new root tree where the nodes corresponding to the specified
+    /// paths point to newly-stored copies.
+    /// 
+    /// As with store_path, the given paths should be canonical.
+    pub fn update_paths<'b, P, I>(&mut self, paths: I) -> Result<IdentityTag>
+            where P: 'b + AsRef<OsStr> + ?Sized,
+                  I: IntoIterator<Item=&'b P> {
+        // store a copy of the paths being updated, for later use when building
+        // an updated root tree
+        let paths: Vec<&'b Path> = {
+            // first sort all the paths by depth, so the shallowest ones are
+            // visited before their potential children
+            let mut paths: Vec<&'b Path> = paths.into_iter()
+                                            .map(Path::new)
+                                            .collect();
+            paths.sort_by_key(|p| p.components().count());
+
+            // prune directories that are subdirs of another dir in the list
+            let mut result: Vec<&'b Path> = Vec::new();
+            for p in paths.into_iter().map(Path::new) {
+                if !result.iter().any(|x| p.starts_with(x)) {
+                    result.push(p);
+                }
+            }
+
+            result
+        };
+        
+        // store each copy of the dirs to update
+        let path_copies: Result<Vec<(&'b Path, IdentityTag)>> = paths
+            .into_iter()
+            .map(|x| {self.store_path(x).map(|r| (x, r))})
+            .collect();
+        let path_copies = path_copies?;
+
+        // store the new root tree
+        self.update_tree(&Path::new("/"), &path_copies)
     }
 }
