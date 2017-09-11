@@ -5,6 +5,7 @@ use std::time;
 use std::fs;
 use std::io;
 use std::io::prelude::*;
+use std::default::Default;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
@@ -66,6 +67,16 @@ impl FSMetadata {
 
 pub trait IntoFSMetadata {
     fn into_metadata(self) -> FSMetadata;
+}
+
+impl Default for FSMetadata {
+    fn default() -> Self {
+        FSMetadata {
+            mtime: time::SystemTime::now(),
+            atime: time::SystemTime::now(),
+            mode: 0o755
+        }
+    }
 }
 
 impl IntoFSMetadata for fs::Metadata {
@@ -198,9 +209,14 @@ impl MetaObject {
     /// 
     /// Fills in the creation time field with the current time
     pub fn snapshot(root: IdentityTag, parent: Option<IdentityTag>) -> Self {
+        // convert to seconds so we can round-trip safely
+        let unix_time = time::SystemTime::now()
+                             .duration_since(time::UNIX_EPOCH)
+                             .unwrap()
+                             .as_secs();
+        let ctime = time::UNIX_EPOCH + time::Duration::from_secs(unix_time);
         MetaObject::Snapshot(Snapshot {
-                create_time: time::SystemTime::now(),
-                root: root, parent: parent})
+                create_time: ctime, root: root, parent: parent})
     }
 
     pub fn name(&self) -> Option<OsString> {
@@ -300,7 +316,10 @@ impl MetaObject {
                 MetaObject::write_time(&mut f, snap.create_time)?;
                 f.write(&snap.root)?;
                 if let Some(p) = snap.parent {
+                    f.write_u8(1);
                     f.write(&p)?;
+                } else {
+                    f.write_u8(0);
                 }
             },
             &MetaObject::Tree(ref tree) => {
@@ -384,5 +403,7 @@ mod tests {
                 },
                 vec![b"012345678901234567890123456789ab".to_owned()]
         ));
+        check_roundtrip(MetaObject::snapshot([1u8; 32], Some([2u8; 32])));
+        check_roundtrip(MetaObject::snapshot([1u8; 32], None));
     }
 }
