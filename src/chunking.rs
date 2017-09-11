@@ -12,7 +12,7 @@ impl<E,I> Chunkable<E> for I where I: Sized+Iterator<Item=Result<u8, E>> {
     fn chunks(self) -> Chunks<E, Self> {
         Chunks {
             data: Vec::new(),
-            sum: 0,
+            sum: 1,
             iter: self
         }
     }
@@ -65,6 +65,6 @@ fn chunk_test() {
     let r1 = r1.unwrap();
     assert!(r1.is_ok());
     let r1 = r1.unwrap();
-    assert_eq!(r1.len(), 4096);
-    assert_eq!(r1.iter().map(|x| x.clone() as u32).sum::<u32>(), 4096)
+    assert_eq!(r1.len(), 4095);
+    assert_eq!(r1.iter().map(|x| x.clone() as u32).sum::<u32>(), 4095)
 }
