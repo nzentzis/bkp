@@ -145,14 +145,18 @@ fn gen_nonce() -> Result<[u8; 12], Error> {
 /// Encrypt the data block in place
 fn encrypt_inplace(key: &[u8; AEAD_KEY_LENGTH],
                    name: &str,
-                   data: Vec<u8>) -> Result<Vec<u8>, Error> {
+                   mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
     let nonce = gen_nonce()?;
 
     // insert the nonce at the beginning of the output
     let tag_len = ring::aead::CHACHA20_POLY1305.tag_len();
     let mut out = Vec::new();
     out.extend_from_slice(&nonce);
-    out.resize(12+data.len()+tag_len, 0);
+
+    // place the data at the start of the encryption buffer
+    let tgt_len = 12 + data.len() + tag_len;
+    out.append(&mut data); // load the data to encrypt
+    out.resize(tgt_len, 0);
 
     // build the key and encode the data
     let key = ring::aead::SealingKey::new(&ring::aead::CHACHA20_POLY1305,
@@ -288,6 +292,19 @@ impl DataKey {
 
         Ok(DataKey { data: key })
     }
+}
+
+#[test]
+fn test_encryption() {
+    let mut key = [0u8; AEAD_KEY_LENGTH];
+    SystemRandom::new().fill(&mut key).map_err(|_| Error::CryptoError).unwrap();
+    let dkey = DataKey { data: key };
+
+    let mut buf = vec![0,1,2,3,4,5,6,7,8,9];
+    let orig = buf.clone();
+    let new = dkey.encrypt(buf).unwrap();
+    let dec = dkey.decrypt(new).unwrap();
+    assert_eq!(dec, orig);
 }
 
 type MasterKey = [u8; ring::digest::SHA256_OUTPUT_LEN];
