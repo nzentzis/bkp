@@ -43,13 +43,21 @@ impl<E, I: Iterator<Item=Result<u8, E>>> Iterator for Chunks<E, I> {
 
             // check whether to break the chunk
             if self.sum % 4096 == 0 {
-                self.sum = 0;
+                self.sum = 1;
                 let mut out = Vec::new();
                 out.append(&mut self.data);
                 return Some(Ok(out));
             }
         }
-        None
+        
+        // return the chunk we have so far
+        if self.data.len() != 0 {
+            let mut out = Vec::new();
+            out.append(&mut self.data);
+            Some(Ok(out))
+        } else {
+            None
+        }
     }
 }
 
@@ -58,13 +66,21 @@ fn chunk_test() {
     use std::iter::repeat; 
 
     let ok: Result<u8, ()> = Ok(1u8);
-    let mut h1 = repeat(ok).chunks();
+    let mut h1 = repeat(ok).take(5000).chunks();
     let r1 = h1.next();
+    let r2 = h1.next();
 
     assert!(r1.is_some());
     let r1 = r1.unwrap();
     assert!(r1.is_ok());
     let r1 = r1.unwrap();
     assert_eq!(r1.len(), 4095);
-    assert_eq!(r1.iter().map(|x| x.clone() as u32).sum::<u32>(), 4095)
+    assert_eq!(r1.iter().map(|x| x.clone() as u32).sum::<u32>(), 4095);
+
+    assert!(r2.is_some());
+    let r2 = r2.unwrap();
+    assert!(r2.is_ok());
+    let r2 = r2.unwrap();
+    assert_eq!(r2.len(), 5000-4095);
+    assert_eq!(r2.iter().map(|x| x.clone() as u32).sum::<u32>(), 5000-4095);
 }
