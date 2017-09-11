@@ -116,7 +116,7 @@ fn do_dest(args: &clap::ArgMatches, opts: &mut GlobalOptions) {
             opts.cfg.targets.push(tgt);
             opts.cfg.save().unwrap_or_fail("Failed to save config file");
         },
-        ("list", Some(_)) => { // list destinations
+        (s, _) if (s == "list") || s.is_empty() => { // list destinations
             let max_left_col = opts.cfg.targets.iter()
                     .map(|ref x| x.name.len())
                     .max().unwrap_or(0);
@@ -209,6 +209,14 @@ fn do_snap(args: &clap::ArgMatches, opts: &GlobalOptions) {
         .unwrap_or_fail("failed to configure history layer");
 
     // update paths
+    let new_tree = history.update_paths(snap_paths)
+                          .unwrap_or_fail("failed to write modified trees");
+
+    // build a new snapshot
+    let snap = history.new_snapshot(new_tree)
+                      .unwrap_or_fail("failed to create snapshot");
+
+    println!("snapshot created.");
 }
 
 fn do_restore(args: &clap::ArgMatches, opts: &GlobalOptions) {
