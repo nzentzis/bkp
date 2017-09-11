@@ -70,6 +70,7 @@ pub enum IntegrityTestMode {
 
 impl IntegrityTestMode {
     fn check_hashes(&self) -> bool { *self == IntegrityTestMode::Exhaustive }
+    fn check_blocks(&self) -> bool { *self >= IntegrityTestMode::Slow }
 }
 
 /// A struct which wraps metadata objects and associates them with a containing
@@ -193,6 +194,9 @@ impl<'a> History<'a> {
     // run integrity tests on a block
     fn check_block(&mut self, mode: IntegrityTestMode, tag: &IdentityTag)
             -> Result<bool> {
+        // skip block checks in faster modes
+        if !mode.check_blocks() { return Ok(true); }
+
         let data = self.backend.read_block(tag)?;
 
         // check the hash if needed
