@@ -4,7 +4,7 @@ use std::error;
 use std::fmt;
 use std::io;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ffi::{OsStr, OsString};
 use std::io::prelude::*;
 use std::ops::Deref;
@@ -13,7 +13,9 @@ use std::os::unix::ffi::OsStringExt;
 use util::Hasher;
 use chunking::Chunkable;
 use remote::{BackendResult, BackendError, Backend};
-use metadata::{Snapshot, FileObject, SymlinkObject, MetaObject, IdentityTag, TreeObject};
+use metadata::{Snapshot, FileObject, SymlinkObject,
+               MetaObject, IdentityTag, TreeObject,
+               FSMetadata};
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -206,7 +208,7 @@ impl<'a> History<'a> {
         Ok(true)
     }
 
-    // run integrity tests on a file
+    // run integrity tests on a file or tree
     fn check_file(&mut self, mode: IntegrityTestMode, tag: &IdentityTag)
             -> Result<bool> {
         let obj = self.backend.read_meta(tag)?;
@@ -220,6 +222,7 @@ impl<'a> History<'a> {
                 Ok(true)
             },
             MetaObject::Symlink(_) => {Ok(true)},
+            MetaObject::Tree(_) => self.check_tree(mode, tag),
             _ => Ok(false)
         }
     }
@@ -369,6 +372,8 @@ impl<'a> History<'a> {
         let ftype = meta.file_type();
         let fname = path.file_name().ok_or(Error::InvalidArgument)?;
 
+        // TODO: handle stores of the root directory
+
         // TODO: checks here to avoid redundant stores
         // this should check the mtime or hash of the files on disk against
         // the mtime/hash of the most recent nodes in the tree
@@ -410,6 +415,49 @@ impl<'a> History<'a> {
         }
     }
 
+    /// Construct a skeleton tree containing the given subtrees at the point of
+    /// the given root, and return its identity.
+    /// 
+    /// For example, given the root `/usr` and the files `/usr/bin/ls` and
+    /// `/usr/share/dict/words`, this function will construct the following set
+    /// of tree objects:
+    /// 
+    ///     /usr
+    ///         /bin
+    ///             [ls]
+    ///         /share
+    ///             /dict
+    ///                 [words]
+    ///
+    /// The generated objects will have 
+    fn build_tree_skeleton<P: AsRef<Path>>(&mut self, root: &Path,
+                                           objects: &Vec<(P, IdentityTag)>) ->
+            Result<IdentityTag> {
+        // iterate through relevant children and build their trees
+        let mut children = Vec::new();
+        for child in objects.iter().filter(|p| p.0.as_ref().starts_with(root)) {
+            children.push(
+                if child.0.as_ref().parent() == Some(root) {
+                    // if we hit the child's parent, just add the child ID
+                    child.1
+                } else {
+                    // figure out which path to create next
+                    let relative = child.0.as_ref().strip_prefix(root).unwrap();
+                    let part = relative.iter().next().unwrap();
+                    
+                    // create intermediary dirs
+                    let path = root.join(part);
+                    self.build_tree_skeleton(&path, objects)?
+                });
+        }
+
+        let name = match root.file_name() {
+            None => OsStr::new(""),
+            Some(n) => n };
+        let tree = MetaObject::tree(name, FSMetadata::default(), children);
+        Ok(self.backend.write_meta(&tree)?)
+    }
+
     /// Build a new tree based on the previous root - start at `/` and move
     /// down, inserting updated elements in the right positions along the way.
     /// 
@@ -417,18 +465,24 @@ impl<'a> History<'a> {
     /// stored tree (if no updated path is rooted there), use a path from the
     /// input set, or use a new stored tree with recursively updated versions of
     /// the tree's children.
-    fn update_tree<'b>(&mut self, root: &Path,
-                       new_vals: &Vec<(&'b Path, IdentityTag)>) ->
+    fn update_tree<P: AsRef<Path>>(&mut self, root: &Path,
+                       new_vals: &Vec<(P, IdentityTag)>) ->
             Result<IdentityTag> {
-        match new_vals.iter().find(|x| x.0 == root) {
+        match new_vals.iter().find(|x| x.0.as_ref() == root) {
             Some(r) => Ok(r.1), // return the updated object
             None => { // no override - look backwards
-                let old_version = self.get_path(root)
-                                      .and_then(|r| r.ok_or(Error::IntegrityError))?;
+                let old_version = match self.get_path(root)? {
+                    Some(r) => r,
+                    None    => {
+                        // the folder didn't exist before, so create a new tree
+                        // object to hold it and insert the object there
+                        return self.build_tree_skeleton(root, new_vals)
+                    }
+                };
 
                 // check whether we actually need to store this - if nothing
                 // under it was changed, we can just re-use the old object
-                if new_vals.iter().any(|x| x.0.starts_with(root)) {
+                if new_vals.iter().any(|x| x.0.as_ref().starts_with(root)) {
                     // yep - build a new tree
                     //
                     // this involves iterating through the old tree's children
@@ -475,23 +529,24 @@ impl<'a> History<'a> {
     /// Generate a new root tree where the nodes corresponding to the specified
     /// paths point to newly-stored copies.
     /// 
-    /// As with store_path, the given paths should be canonical.
+    /// Input paths will be canonicalized before further usage.
     pub fn update_paths<'b, P, I>(&mut self, paths: I) -> Result<IdentityTag>
             where P: 'b + AsRef<OsStr> + ?Sized,
                   I: IntoIterator<Item=&'b P> {
         // store a copy of the paths being updated, for later use when building
         // an updated root tree
-        let paths: Vec<&'b Path> = {
+        let paths: Vec<PathBuf> = {
             // first sort all the paths by depth, so the shallowest ones are
             // visited before their potential children
-            let mut paths: Vec<&'b Path> = paths.into_iter()
+            let mut paths: Vec<PathBuf> = paths.into_iter()
                                             .map(Path::new)
+                                            .map(|p| p.canonicalize().unwrap())
                                             .collect();
             paths.sort_by_key(|p| p.components().count());
 
             // prune directories that are subdirs of another dir in the list
-            let mut result: Vec<&'b Path> = Vec::new();
-            for p in paths.into_iter().map(Path::new) {
+            let mut result: Vec<PathBuf> = Vec::new();
+            for p in paths.into_iter() {
                 if !result.iter().any(|x| p.starts_with(x)) {
                     result.push(p);
                 }
@@ -501,9 +556,9 @@ impl<'a> History<'a> {
         };
         
         // store each copy of the dirs to update
-        let path_copies: Result<Vec<(&'b Path, IdentityTag)>> = paths
+        let path_copies: Result<Vec<(PathBuf, IdentityTag)>> = paths
             .into_iter()
-            .map(|x| {self.store_path(x).map(|r| (x, r))})
+            .map(|x| {self.store_path(&x).map(|r| (x, r))})
             .collect();
         let path_copies = path_copies?;
 

@@ -16,7 +16,9 @@ contain pointers to the previous snapshot, if any exists.
 Underneath the snapshot object, the tree object represents one directory on the
 client's filesystem. Each tree contains the bytes of its own filename, a copy of
 its FS metadata, and a list of IDs of the objects contained inside it. These IDs
-can refer to any of the FS node object types: trees, files, or symlinks.
+can refer to any of the FS node object types: trees, files, or symlinks. Note
+that the tree object's filename is empty if it's the root of the filesystem
+hierarchy (though the filename may also be empty in other cases).
 
 Symlink objects are the second type of FS object, and are referenced only from
 tree objects. They represent a symbolic link on the disk, and contain their
