@@ -71,6 +71,7 @@ pub enum IntegrityTestMode {
 impl IntegrityTestMode {
     fn check_hashes(&self) -> bool { *self == IntegrityTestMode::Exhaustive }
     fn check_blocks(&self) -> bool { *self >= IntegrityTestMode::Slow }
+    fn check_trees(&self) -> bool { *self >= IntegrityTestMode::Normal }
 }
 
 /// A struct which wraps metadata objects and associates them with a containing
@@ -264,8 +265,10 @@ impl<'a> History<'a> {
                 }
 
                 // check the file structure
-                if !self.check_tree(mode, &snap.root)? {
-                    return Ok(false);
+                if mode.check_trees() {
+                    if !self.check_tree(mode, &snap.root)? {
+                        return Ok(false);
+                    }
                 }
             } else {
                 return Ok(false);
