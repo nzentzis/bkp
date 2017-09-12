@@ -37,9 +37,15 @@ all fields are little-endian unless otherwise specified.
         u8[32] id
     }
 
+    struct fs_owner {
+        u32 uid
+        u32 gid
+    }
+
     struct fs_metadata {
         u64 mtime // unix time
         u64 atime
+        fs_owner owner
 
         // unix mode bits
         bitfield(u16) mode {
