@@ -9,6 +9,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::prelude::*;
 use std::ops::Deref;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::PermissionsExt;
 
 use util::Hasher;
 use chunking::Chunkable;
@@ -23,6 +24,7 @@ pub enum Error {
     InvalidArgument,
     IntegrityError,
     NoValidSnapshot,
+    WouldOverwrite,
     IOError(io::Error),
     Backend(BackendError),
 }
@@ -33,6 +35,7 @@ impl fmt::Display for Error {
             &Error::InvalidArgument=> write!(f, "invalid argument"),
             &Error::IntegrityError => write!(f, "integrity error"),
             &Error::NoValidSnapshot=> write!(f, "no valid snapshot"),
+            &Error::WouldOverwrite => write!(f, "refusing to overwrite"),
             &Error::IOError(ref e) => write!(f, "I/O error: {}", e),
             &Error::Backend(ref e) => write!(f, "backend error: {}", e),
         }
@@ -45,6 +48,7 @@ impl error::Error for Error {
             &Error::InvalidArgument=> "invalid argument",
             &Error::IntegrityError => "integrity error",
             &Error::NoValidSnapshot=> "no valid snapshot",
+            &Error::WouldOverwrite => "refusing to overwrite",
             &Error::IOError(_)     => "I/O error",
             &Error::Backend(_)     => "backend error",
         }
@@ -216,6 +220,95 @@ impl<'a> ContextWrapper<'a, FileObject> {
 }
 
 impl<'a> ContextWrapper<'a, SymlinkObject> {
+}
+
+pub trait Restorable {
+    /// Restore the given object into the tree rooted at `to`
+    /// 
+    /// If `overwrite` is set, then overwrite any existing local data instead
+    /// of aborting when that would otherwise occur.
+    fn restore<P: AsRef<Path>>(&self, to: P, overwrite: bool) -> Result<()>;
+}
+
+impl<'a, 'b> Restorable for ContextWrapper<'a, &'b FileObject> {
+    fn restore<P: AsRef<Path>>(&self, base: P, overwrite: bool) -> Result<()> {
+        let path = base.as_ref().join(OsString::from_vec(self.name.clone()));
+
+        // store the data before updating metadata attrs
+        { 
+            // TODO: honor the overwrite option
+            let mut f = fs::OpenOptions::new()
+                       .write(true)
+                       .create_new(true)
+                       .open(&path)?;
+
+            // download each content block and copy them into the file
+            for block in self.body.iter() {
+                let data = self.backend.read_block(&block)?;
+                f.write_all(&data)?;
+            }
+
+            // update metadata
+            // TODO: handle uid/gid here
+            let mut perms = f.metadata()?.permissions();
+            perms.set_mode(self.meta.mode);
+            f.set_permissions(perms)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl<'a, 'b> Restorable for ContextWrapper<'a, &'b TreeObject> {
+    fn restore<P: AsRef<Path>>(&self, base: P, overwrite: bool) -> Result<()> {
+        let path = base.as_ref().join(OsString::from_vec(self.name.clone()));
+
+        // create the directory if it doesn't already exist
+        if path.exists() {
+            let meta = path.metadata()?;
+
+            // refuse to overwrite
+            if !meta.is_dir() { return Err(Error::WouldOverwrite); }
+        } else {
+            // create it
+            fs::create_dir(&path)?;
+
+            // update metadata
+            // TODO: handle uid/gid here
+            let mut perms = fs::metadata(&path)?.permissions();
+            perms.set_mode(self.meta.mode);
+            fs::set_permissions(&path, perms);
+        }
+
+        // descend into children
+        for child in self.children.iter() {
+            match self.backend.read_meta(&child)? {
+                MetaObject::Snapshot(_)  => return Err(Error::IntegrityError),
+                MetaObject::Tree(t)      => self.child(&t).restore(&path, overwrite)?,
+                MetaObject::File(t)      => self.child(&t).restore(&path, overwrite)?,
+                MetaObject::Symlink(l)   => self.child(&l).restore(&path, overwrite)?,
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<'a, 'b> Restorable for ContextWrapper<'a, &'b SymlinkObject> {
+    fn restore<P: AsRef<Path>>(&self, base: P, overwrite: bool) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+impl<'a> Restorable for ContextWrapper<'a, MetaObject> {
+    fn restore<P: AsRef<Path>>(&self, base: P, overwrite: bool) -> Result<()> {
+        match self.object {
+            MetaObject::Tree(ref t) => self.child(t).restore(base, overwrite),
+            MetaObject::File(ref t) => self.child(t).restore(base, overwrite),
+            MetaObject::Symlink(ref t) => self.child(t).restore(base, overwrite),
+            _ => Err(Error::InvalidArgument)
+        }
+    }
 }
 
 /// A wrapper struct to provide history access on top of a given backend
