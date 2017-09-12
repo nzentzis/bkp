@@ -110,6 +110,20 @@ impl<'a> ContextWrapper<'a, Snapshot> {
             _                   => Err(Error::IntegrityError)
         }
     }
+
+    /// Get this snapshot's parent
+    pub fn parent(&self) -> Result<Option<ContextWrapper<'a, Snapshot>>> {
+        match self.object.parent {
+            None => Ok(None),
+            Some(ident) => {
+                let obj = self.backend.read_meta(&ident)?;
+                match obj {
+                    MetaObject::Snapshot(snap) => Ok(Some(self.child(snap))),
+                    _                          => Err(Error::IntegrityError)
+                }
+            }
+        }
+    }
 }
 
 /// Context implementation for tree objects
@@ -277,9 +291,15 @@ impl<'a> History<'a> {
         Ok(true)
     }
 
-    #[allow(dead_code)]
+    /// Retrieve a context-wrapped version of the most recent snapshot, if any
+    pub fn get_snapshot<'b>(&'b self)
+            -> Result<Option<ContextWrapper<'b, Snapshot>>> {
+        self.get_head_snapshot()
+            .map(|o| o.map(|x| ContextWrapper::new(self.backend, x)))
+    }
+
     /// Retrieve the most recent snapshot, if any
-    pub fn get_snapshot(&self) -> Result<Option<Snapshot>> {
+    fn get_head_snapshot(&self) -> Result<Option<Snapshot>> {
         let snapshot = self.backend.get_head()?;
         if snapshot.is_none() {
             return Ok(None);
@@ -299,7 +319,7 @@ impl<'a> History<'a> {
     /// If a snapshot is already stored, then the resulting snapshot will use it
     /// as its parent. Otherwise, the new snapshot will be an origin snapshot.
     pub fn new_snapshot(&mut self, root: IdentityTag) -> Result<IdentityTag> {
-        let snap = self.get_snapshot()?;
+        let snap = self.get_head_snapshot()?;
         let new_obj = MetaObject::snapshot(root,
                                            snap.map(|o| MetaObject::Snapshot(o)
                                                         .ident()));
@@ -320,7 +340,7 @@ impl<'a> History<'a> {
     pub fn get_path(&self, path: &Path) -> Result<Option<MetaObject>> {
         use std::path::Component;
 
-        let snapshot = self.get_snapshot()?;
+        let snapshot = self.get_head_snapshot()?;
 
         if snapshot.is_none() { return Ok(None); }
         let snapshot = snapshot.unwrap();
