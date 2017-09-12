@@ -88,6 +88,16 @@ impl From<oneshot::Canceled> for BackendError {
     }
 }
 
+struct BackendLock<'a> {
+    backend: &'a Backend
+}
+
+impl<'a> Drop for BackendLock<'a> {
+    fn drop(&mut self) {
+        let _ = self.backend.unlock();
+    }
+}
+
 impl Backend {
     /// Initialize a store on the target if one doesn't exist already. Return
     /// the remote's data key.
@@ -156,11 +166,11 @@ impl Backend {
     }
 
     /// Lock the target atomically. If we fail, return an error.
-    fn lock(&mut self) -> Result<(), BackendError> {
+    fn lock(&self) -> Result<BackendLock, BackendError> {
         let lock_path = self.root.join("bkp.lock");
         let sess = self.sess.lock().unwrap();
         let r = if let Err(e) = sess.open_mode(&lock_path,
-                                       self::ssh2::CREATE,
+                                       self::ssh2::CREATE | self::ssh2::EXCLUSIVE,
                                        PERM_0755,
                                        self::ssh2::OpenType::File) {
             let e_code = e.code();
@@ -168,13 +178,13 @@ impl Backend {
             Err(BackendError::BackendError(
                 format!("unable to lock ({}) - {}", e_code, e_msg)))
         } else {
-            Ok(())
+            Ok(BackendLock { backend: self })
         };
         r
     }
 
     /// Release an atomic lock on the target
-    fn unlock(&mut self) -> Result<(), BackendError> {
+    fn unlock(&self) -> Result<(), BackendError> {
         let lock_path = self.root.join("bkp.lock");
         let sess = self.sess.lock().unwrap();
         sess.unlink(&lock_path)?;
@@ -261,6 +271,7 @@ impl MetadataStore for Backend {
         let name = tag.as_ref().to_hex();
 
         // open the file and write the object
+        // no need to lock here, since the files are keyed by contents
         let sess = self.sess.lock().unwrap();
         let mut path = self.root.join("metadata");
         path.push(prefix);
@@ -286,6 +297,7 @@ impl MetadataStore for Backend {
         // open and read it
         let mut ident = [0u8; metadata::IDENTITY_LEN];
         {
+            let dir_lock = self.lock()?;
             let sess = self.sess.lock().unwrap();
             let f = sess.open(&path);
             match f {
@@ -305,6 +317,7 @@ impl MetadataStore for Backend {
 
         // write it out
         {
+            let dir_lock = self.lock()?;
             let sess = self.sess.lock().unwrap();
             let mut f = sess.create(&path)?;
             f.write_all(tag)?;
@@ -343,6 +356,7 @@ impl BlockStore for Backend {
         // encrypt the data and write it to a file
         let encrypted = self.data_key().encrypt(data.iter().cloned().collect())?;
 
+        // no need to lock here, since the files are keyed by contents
         let sess = self.sess.lock().unwrap();
         let mut path = self.root.join("blocks");
         path.push(prefix);
@@ -439,11 +453,5 @@ impl<'a> RemoteBackend<ConnectOptions<'a>> for Backend {
         backend.initialize()?;
 
         Ok(backend)
-    }
-}
-
-impl Drop for Backend {
-    fn drop(&mut self) {
-        let _ = self.unlock();
     }
 }
