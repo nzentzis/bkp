@@ -1,6 +1,7 @@
+const CHUNK_SIZE: usize = 512;
+
 pub struct Chunks<E, I: Iterator<Item=Result<u8, E>> + ?Sized> {
     data: Vec<u8>,
-    sum: u32,
     iter: I,
 }
 
@@ -11,8 +12,7 @@ pub trait Chunkable<E> where Self: Iterator<Item=Result<u8, E>> {
 impl<E,I> Chunkable<E> for I where I: Sized+Iterator<Item=Result<u8, E>> {
     fn chunks(self) -> Chunks<E, Self> {
         Chunks {
-            data: Vec::new(),
-            sum: 1,
+            data: Vec::with_capacity(CHUNK_SIZE),
             iter: self
         }
     }
@@ -30,31 +30,15 @@ impl<E, I: Iterator<Item=Result<u8, E>>> Iterator for Chunks<E, I> {
             };
             self.data.push(x);
 
-            // update sum: add the new byte
-            self.sum += x as u32;
-
-            // update sum: remove byte that's leaving the rolling sum if needed
-            let len = self.data.len();
-            if len >= 8196 {
-                if let Some(old) = self.data.get(len - 8196) {
-                    self.sum -= old.clone() as u32;
-                }
-            }
-
             // check whether to break the chunk
-            if self.sum % 4096 == 0 {
-                self.sum = 1;
-                let mut out = Vec::new();
-                out.append(&mut self.data);
-                return Some(Ok(out));
+            if self.data.len() == CHUNK_SIZE {
+                return Some(Ok(self.data.split_off(0)));
             }
         }
         
         // return the chunk we have so far
         if self.data.len() != 0 {
-            let mut out = Vec::new();
-            out.append(&mut self.data);
-            Some(Ok(out))
+            Some(Ok(self.data.split_off(0)))
         } else {
             None
         }
@@ -66,7 +50,7 @@ fn chunk_test() {
     use std::iter::repeat; 
 
     let ok: Result<u8, ()> = Ok(1u8);
-    let mut h1 = repeat(ok).take(5000).chunks();
+    let mut h1 = repeat(ok).take(600).chunks();
     let r1 = h1.next();
     let r2 = h1.next();
 
@@ -74,13 +58,13 @@ fn chunk_test() {
     let r1 = r1.unwrap();
     assert!(r1.is_ok());
     let r1 = r1.unwrap();
-    assert_eq!(r1.len(), 4095);
-    assert_eq!(r1.iter().map(|x| x.clone() as u32).sum::<u32>(), 4095);
+    assert_eq!(r1.len(), 512);
+    assert_eq!(r1.iter().map(|x| x.clone() as u32).sum::<u32>(), 512);
 
     assert!(r2.is_some());
     let r2 = r2.unwrap();
     assert!(r2.is_ok());
     let r2 = r2.unwrap();
-    assert_eq!(r2.len(), 5000-4095);
-    assert_eq!(r2.iter().map(|x| x.clone() as u32).sum::<u32>(), 5000-4095);
+    assert_eq!(r2.len(), 600-512);
+    assert_eq!(r2.iter().map(|x| x.clone() as u32).sum::<u32>(), 600-512);
 }
