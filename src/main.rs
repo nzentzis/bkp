@@ -303,9 +303,11 @@ fn do_restore(args: &clap::ArgMatches, opts: &GlobalOptions) {
 
     // actually reconstruct them
     let base_path = Path::new(args.value_of("into").unwrap_or("/"));
-    let overwrite = args.is_present("overwrite");
+    let options = history::RestoreOptions::new()
+        .overwrite(args.is_present("overwrite"))
+        .ignore_permissions(args.is_present("no_perms"));
     for (path, obj) in objects {
-        match obj.restore(&base_path, overwrite) {
+        match obj.restore(&base_path, &options) {
             Ok(()) => {},
             Err(history::Error::InvalidArgument) => {
                 eprintln!("bkp: possible integrity violation found!");
@@ -419,8 +421,7 @@ fn main() {
          (@arg local: ... min_values(1) "Files or directories to restore")
          (@arg as_of: -t --time +takes_value
           "Restore to most recent snapshot before given date/time")
-         (@arg overwrite: -o --overwrite +takes_value
-          "Overwrite existing local files")
+         (@arg overwrite: -o --overwrite "Overwrite existing local files")
          (@arg from: -f --from +takes_value "Restore data from another machine")
          (@arg no_perms: -p --("no-perms")
           "Don't restore filesystem permissions")

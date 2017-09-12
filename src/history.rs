@@ -222,16 +222,46 @@ impl<'a> ContextWrapper<'a, FileObject> {
 impl<'a> ContextWrapper<'a, SymlinkObject> {
 }
 
+pub struct RestoreOptions {
+    /// Whether to overwrite existing data found during restore
+    overwrite: bool,
+
+    /// Whether to apply the previous permissions or use the system defaults
+    use_perms: bool,
+}
+
+impl RestoreOptions {
+    /// Generate a RestoreOptions object with sane defaults
+    pub fn new() -> Self {
+        RestoreOptions {
+            overwrite: false,
+            use_perms: true
+        }
+    }
+
+    /// Configure whether to overwrite files/dirs
+    pub fn overwrite(mut self, enable: bool) -> Self {
+        self.overwrite = enable;
+        self
+    }
+
+    /// Configure whether to ignore stored permissions
+    pub fn ignore_permissions(mut self, enable: bool) -> Self {
+        self.use_perms = !enable;
+        self
+    }
+}
+
 pub trait Restorable {
     /// Restore the given object into the tree rooted at `to`
     /// 
     /// If `overwrite` is set, then overwrite any existing local data instead
     /// of aborting when that would otherwise occur.
-    fn restore<P: AsRef<Path>>(&self, to: P, overwrite: bool) -> Result<()>;
+    fn restore<P: AsRef<Path>>(&self, to: P, opts: &RestoreOptions) -> Result<()>;
 }
 
 impl<'a, 'b> Restorable for ContextWrapper<'a, &'b FileObject> {
-    fn restore<P: AsRef<Path>>(&self, base: P, overwrite: bool) -> Result<()> {
+    fn restore<P: AsRef<Path>>(&self, base: P, opts: &RestoreOptions) -> Result<()> {
         let path = base.as_ref().join(OsString::from_vec(self.name.clone()));
 
         // store the data before updating metadata attrs
@@ -239,7 +269,8 @@ impl<'a, 'b> Restorable for ContextWrapper<'a, &'b FileObject> {
             // TODO: honor the overwrite option
             let mut f = fs::OpenOptions::new()
                        .write(true)
-                       .create_new(true)
+                       .create(true)
+                       .create_new(!opts.overwrite)
                        .open(&path)?;
 
             // download each content block and copy them into the file
@@ -248,11 +279,14 @@ impl<'a, 'b> Restorable for ContextWrapper<'a, &'b FileObject> {
                 f.write_all(&data)?;
             }
 
-            // update metadata
-            // TODO: handle uid/gid here
-            let mut perms = f.metadata()?.permissions();
-            perms.set_mode(self.meta.mode);
-            f.set_permissions(perms)?;
+            if opts.use_perms {
+                // update metadata
+                let mut perms = f.metadata()?.permissions();
+                perms.set_mode(self.meta.mode);
+                f.set_permissions(perms)?;
+
+                // TODO: handle uid/gid here
+            }
         }
 
         Ok(())
@@ -260,7 +294,7 @@ impl<'a, 'b> Restorable for ContextWrapper<'a, &'b FileObject> {
 }
 
 impl<'a, 'b> Restorable for ContextWrapper<'a, &'b TreeObject> {
-    fn restore<P: AsRef<Path>>(&self, base: P, overwrite: bool) -> Result<()> {
+    fn restore<P: AsRef<Path>>(&self, base: P, opts: &RestoreOptions) -> Result<()> {
         let path = base.as_ref().join(OsString::from_vec(self.name.clone()));
 
         // create the directory if it doesn't already exist
@@ -272,21 +306,23 @@ impl<'a, 'b> Restorable for ContextWrapper<'a, &'b TreeObject> {
         } else {
             // create it
             fs::create_dir(&path)?;
+        }
 
+        if opts.use_perms {
             // update metadata
-            // TODO: handle uid/gid here
             let mut perms = fs::metadata(&path)?.permissions();
             perms.set_mode(self.meta.mode);
             fs::set_permissions(&path, perms);
+            // TODO: handle uid/gid here
         }
 
         // descend into children
         for child in self.children.iter() {
             match self.backend.read_meta(&child)? {
                 MetaObject::Snapshot(_)  => return Err(Error::IntegrityError),
-                MetaObject::Tree(t)      => self.child(&t).restore(&path, overwrite)?,
-                MetaObject::File(t)      => self.child(&t).restore(&path, overwrite)?,
-                MetaObject::Symlink(l)   => self.child(&l).restore(&path, overwrite)?,
+                MetaObject::Tree(t)      => self.child(&t).restore(&path, opts)?,
+                MetaObject::File(t)      => self.child(&t).restore(&path, opts)?,
+                MetaObject::Symlink(l)   => self.child(&l).restore(&path, opts)?,
             }
         }
 
@@ -295,17 +331,17 @@ impl<'a, 'b> Restorable for ContextWrapper<'a, &'b TreeObject> {
 }
 
 impl<'a, 'b> Restorable for ContextWrapper<'a, &'b SymlinkObject> {
-    fn restore<P: AsRef<Path>>(&self, base: P, overwrite: bool) -> Result<()> {
+    fn restore<P: AsRef<Path>>(&self, base: P, opts: &RestoreOptions) -> Result<()> {
         unimplemented!()
     }
 }
 
 impl<'a> Restorable for ContextWrapper<'a, MetaObject> {
-    fn restore<P: AsRef<Path>>(&self, base: P, overwrite: bool) -> Result<()> {
+    fn restore<P: AsRef<Path>>(&self, base: P, opts: &RestoreOptions) -> Result<()> {
         match self.object {
-            MetaObject::Tree(ref t) => self.child(t).restore(base, overwrite),
-            MetaObject::File(ref t) => self.child(t).restore(base, overwrite),
-            MetaObject::Symlink(ref t) => self.child(t).restore(base, overwrite),
+            MetaObject::Tree(ref t) => self.child(t).restore(base, opts),
+            MetaObject::File(ref t) => self.child(t).restore(base, opts),
+            MetaObject::Symlink(ref t) => self.child(t).restore(base, opts),
             _ => Err(Error::InvalidArgument)
         }
     }
