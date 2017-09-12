@@ -124,6 +124,18 @@ impl<'a> ContextWrapper<'a, Snapshot> {
             }
         }
     }
+
+    /// Get the object at the given path in this snapshot, if any
+    pub fn get<P>(&self, pth: P) -> Result<Option<ContextWrapper<'a, MetaObject>>> 
+            where P: AsRef<Path> {
+        // convert to relative path before delegating
+        let pth = if pth.as_ref().is_absolute() {
+                pth.as_ref().strip_prefix("/").unwrap()
+            } else {
+                pth.as_ref()
+            };
+        self.get_tree()?.get(pth)
+    }
 }
 
 /// Context implementation for tree objects
@@ -131,37 +143,47 @@ impl<'a> ContextWrapper<'a, TreeObject> {
     /// Get the object's ID at a given path in this snapshot
     pub fn get_id<P>(&self, pth: P) -> Result<Option<IdentityTag>>
             where P: AsRef<Path> {
-        let mut node: TreeObject = self.object.clone();
+        let mut node: Option<TreeObject> = Some(self.object.clone());
 
         // traverse path
+        let mut last_id = MetaObject::Tree(self.object.clone()).ident();
         for part in pth.as_ref().iter() {
             let part_vec = part.to_owned().into_vec();
 
-            // retrieve children
-            let children: BackendResult<Vec<(IdentityTag,MetaObject)>> =
-                node.children.iter()
-                .map(|x| self.backend.read_meta(&x).map(|m| (x.clone(), m)))
-                .collect();
-            let children = children?;
+            let children = {
+                // retrieve children
+                let this_node = if let Some(ref n) = node { n }
+                                else { return Ok(None); };
+                let children: BackendResult<Vec<(IdentityTag,MetaObject)>> =
+                    this_node.children.iter()
+                    .map(|x| self.backend.read_meta(&x).map(|m| (x.clone(), m)))
+                    .collect();
+                children?
+            };
 
             let mut found = false;
             for (ident,c) in children {
+                last_id = c.ident();
                 match c {
                     MetaObject::Tree(t) => {
                         if t.name == part_vec {
-                            node = t;
+                            node = Some(t);
                             found = true;
                             break;
                         }
                     },
                     MetaObject::File(f) => {
                         if f.name == part_vec {
-                            return Ok(Some(ident));
+                            node = None;
+                            found = true;
+                            break;
                         }
                     },
-                    MetaObject::Symlink(ref f) if f.name == part_vec => {
+                    MetaObject::Symlink(ref f) => {
                         if f.name == part_vec {
-                            return Ok(Some(ident));
+                            node = None;
+                            found = true;
+                            break;
                         }
                     },
                     _ => {
@@ -175,7 +197,8 @@ impl<'a> ContextWrapper<'a, TreeObject> {
                 return Ok(None);
             }
         }
-        Ok(None)
+
+        Ok(Some(last_id))
     }
 
     /// Get the object at a given path in this snapshot, if any
