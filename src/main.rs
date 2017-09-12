@@ -24,6 +24,9 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path,PathBuf};
 
+use metadata::MetaObject;
+use history::Restorable;
+
 macro_rules! err_write {
     ($s: tt) => {
         writeln!(std::io::stderr(), $s).ok().unwrap_or(())};
@@ -220,7 +223,98 @@ fn do_snap(args: &clap::ArgMatches, opts: &GlobalOptions) {
 }
 
 fn do_restore(args: &clap::ArgMatches, opts: &GlobalOptions) {
-    unimplemented!()
+    let remote = args.value_of("remote").unwrap().to_owned();
+
+    // TODO: avoid specifying remote by searching for all remotes with a file
+
+    let objects: Vec<&Path> = args.values_of("local").unwrap()
+                                  .map(Path::new).collect();
+
+    let mut remote = connect_backend(remote, opts)
+                    .unwrap_or_fail("backend connection failed");
+    let mut history = history::History::new(&mut remote)
+                     .unwrap_or_fail("failed to configure history layer");
+
+    // TODO: figure out the target time, if any
+
+    // find the requested snapshot
+    // TODO: add command for recovering backups with broken head snapshot
+    let mut snapshot = history.get_snapshot()
+                              .unwrap_or_fail("failed to read root snapshot");
+    if snapshot.is_none() {
+        eprintln!("bkp: cannot restore from empty target");
+        std::process::exit(1);
+    }
+    let snapshot = loop {
+        match snapshot {
+            None => {
+                eprintln!("bkp: no matching snapshot");
+                // TODO: show most recent one?
+                std::process::exit(1);
+            },
+            Some(snap) => {
+                // TODO: Add target time check here
+                if true {
+                    break snap;
+                }
+                snapshot = snap.parent()
+                               .unwrap_or_fail("failed to read snapshot");
+            }
+        }
+    };
+
+    // retrieve the objects we're interested in
+    let objects: history::Result<Vec<_>> = objects.into_iter()
+                                                  .map(|obj| snapshot.get(&obj).map(|r| (obj, r)))
+                                                  .collect();
+    let objects = objects.unwrap_or_fail("cannot read stored objects");
+    
+    // warn about missing files, if any
+    if objects.iter().any(|x| x.1.is_none()) {
+        println!("The following paths could not be found:");
+        for p in objects.iter().filter(|x| x.1.is_none()) {
+            println!("\t{}", p.0.to_str().unwrap_or("<unprintable path>"));
+        }
+        println!("");
+
+        use std::ascii::AsciiExt;
+        let abort = loop {
+            print!("Do you want to continue restoring? (y/n) ");
+            std::io::stdout().flush().unwrap();
+            let mut response = String::new();
+            std::io::stdin().read_line(&mut response).unwrap();
+            
+            match response.chars().next().map(|x| x.to_ascii_lowercase()) {
+                Some('y') => break false, // no abort
+                Some('n') => break true,  // abort
+                _         => {},          // ask again
+            }
+        };
+
+        if abort {
+            println!("aborted");
+            return;
+        }
+    }
+
+    let objects: Vec<_> = objects.into_iter()
+                                 .filter_map(|(p,o)| o.map(|v| (p, v)))
+                                 .collect();
+
+    // actually reconstruct them
+    let base_path = Path::new(args.value_of("into").unwrap_or("/"));
+    let overwrite = args.is_present("overwrite");
+    for (path, obj) in objects {
+        match obj.restore(&base_path, overwrite) {
+            Ok(()) => {},
+            Err(history::Error::InvalidArgument) => {
+                eprintln!("bkp: possible integrity violation found!");
+                eprintln!("     invalid object type at path: {}",
+                          path.to_str().unwrap_or("<unprintable>"));
+            },
+            Err(e) => fail_error("cannot restore object", e)
+        }
+    }
 }
 
 fn load_config(pth: &Path) -> config::Config {
@@ -321,6 +415,8 @@ fn main() {
           "Use content hashes to check for file changes rather than FS's mtime"))
         (@subcommand restore =>
          (about: "Restore local files from backup")
+         (@arg remote: +required "Remote to restore from")
+         (@arg local: ... min_values(1) "Files or directories to restore")
          (@arg as_of: -t --time +takes_value
           "Restore to most recent snapshot before given date/time")
          (@arg overwrite: -o --overwrite +takes_value
@@ -331,7 +427,6 @@ fn main() {
          (@arg no_attrs: -a --("no-attrs") "Don't restore file metadata")
          (@arg into: -i --into conflicts_with[overwrite] +takes_value
           "Restore to a given path")
-         (@arg local: +takes_value * ... "Files or directories to restore")
          )
         ).get_matches();
 
